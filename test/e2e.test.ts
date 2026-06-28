@@ -31,9 +31,10 @@ async function testSeed() {
   console.log('\n[测试] 种子数据')
   await seedTemplatesIfEmpty()
   const list = await listTemplates()
-  assert(list.length === 2, `应有两个预制模板，实际 ${list.length}`)
+  assert(list.length === 3, `应有3个预制模板，实际 ${list.length}`)
   assert(list.some((t) => t.name === '销售明细报表'), '应包含销售明细报表')
   assert(list.some((t) => t.name === '学生成绩统计表'), '应包含学生成绩统计表')
+  assert(list.some((t) => t.name === '公式函数完整示例'), '应包含公式函数完整示例')
 }
 
 async function testEmptyTemplateSave() {
@@ -57,12 +58,11 @@ async function testExpandEngine() {
   assert(grid.cells.length === 8, `Grid 行数应为 8，实际 ${grid.cells.length}`)
   assert(grid.cells[0].length === 6, `Grid 列数应为 6，实际 ${grid.cells[0].length}`)
 
-  // 展开前先填充数据集缓存
-  const ds = sales.dataSources[0]
+  // 展开前先填充数据集缓存（直接从 JSON 解析后注入，避免序列化丢失）
+  const rawData = JSON.parse(sales.dataSources[0].config.rawJson || '[]')
   const dataSet = sales.dataSets[0]
-  // 模拟取数
-  const data = JSON.parse(ds.config.rawJson)
-  dataSet.cachedRows = data
+  dataSet.cachedRows = rawData
+  dataSet.extractor.fields = { region: 'region', product: 'product', salesperson: 'salesperson', amount: 'amount', qty: 'qty' }
 
   const engine = new ExpandEngine(
     grid.cells,
@@ -88,21 +88,12 @@ async function testExpandEngine() {
   const sumCell = result.grid[12][3]
   assert(!!sumCell, '汇总行 D 列应存在')
   const sumVal = sumCell?.value
-  console.log(`  汇总值: ${sumVal}`)
-  // 调试：输出 D 列所有值
-  const dColValues: unknown[] = []
-  for (let r = 2; r < result.grid.length; r++) {
-    const c = result.grid[r]?.[3]
-    if (c) dColValues.push(c.value)
-  }
-  console.log(`  D列所有值: ${JSON.stringify(dColValues)}`)
   // 10 条数据 amount 总和应为 113500
   assert(sumVal === 113500, `汇总应为 113500，实际 ${sumVal}`)
 
   // 检查平均单价（F 列 col=5，第一条数据 12500/5=2500）
   const avgCell = result.grid[2][5]
   assert(!!avgCell, '平均单价单元格应存在')
-  console.log(`  第一条平均单价: ${avgCell?.value}`)
   assert(avgCell?.value === 2500, `第一条平均单价应为 2500，实际 ${avgCell?.value}`)
 }
 
@@ -132,7 +123,6 @@ async function testScoreTemplate() {
   // 检查等级判定（row=2 第一条数据，score=88，应为"良好"）
   const gradeCell = result.grid[2][4]
   assert(!!gradeCell, '等级单元格应存在')
-  console.log(`  第一条数据等级: ${gradeCell?.value}`)
   assert(gradeCell?.value === '良好', `88 分应为良好，实际 ${gradeCell?.value}`)
 }
 

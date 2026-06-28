@@ -239,12 +239,12 @@ export class ExpandEngine {
 
   /** 填充同行其他单元格的上下文（从属单元格跟随主格展开） */
   private fillRowCells(row: number, masterCell: Cell, ctx: ExpandContext) {
-    // 同行所有未设置 context 的单元格继承主格上下文
-    // 不再用 source.row 比较（粘贴后主格 row 已变，无法匹配模板行）
+    // 展开感知的单元格（expandDirection !== 'none'）由自己的展开逻辑处理上下文
+    // 无展开方向的跟随单元格（expandDirection === 'none'）继承主格上下文
     for (let c = 0; c < this.rendered[row].length; c++) {
       if (c === masterCell.col) continue
       const rc = this.rendered[row][c]
-      if (rc && !rc.context) {
+      if (rc && !rc.context && rc.source.expandDirection === 'none') {
         rc.context = ctx
       }
     }
@@ -267,7 +267,7 @@ export class ExpandEngine {
   private fillColCells(col: number, masterCell: Cell, ctx: ExpandContext) {
     for (let r = 0; r < this.rendered.length; r++) {
       const rc = this.rendered[r]?.[col]
-      if (rc && !rc.context && rc.source.col === masterCell.col) {
+      if (rc && !rc.context && rc.source.expandDirection === 'none' && rc.source.col === masterCell.col) {
         rc.context = ctx
       }
     }
