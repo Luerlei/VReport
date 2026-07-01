@@ -3,6 +3,7 @@
  * 覆盖模块：DS(报表设计) / FE(公式编辑) / PV(预览正确) / EX(导出)
  */
 import 'fake-indexeddb/auto'
+import { it, expect } from 'vitest'
 import { Grid } from '../src/core/cell/Grid'
 import { createCell } from '../src/core/cell/types'
 import { seedTemplatesIfEmpty, reseedTemplates } from '../src/utils/seed'
@@ -774,7 +775,9 @@ async function main() {
     console.log('\n失败用例:')
     failures.forEach((f) => console.log(`  ❌ ${f}`))
   }
-  process.exit(failed > 0 ? 1 : 0)
 }
 
-main().catch((err) => { console.error('测试执行出错:', err); process.exit(1) })
+it('综合测试用例', async () => {
+  await main()
+  expect(failed, `存在 ${failed} 个失败断言`).toBe(0)
+})

@@ -4,6 +4,7 @@
  */
 // 必须最先导入 fake-indexeddb
 import 'fake-indexeddb/auto'
+import { it, expect } from 'vitest'
 import { Grid } from '../src/core/cell/Grid'
 import { DEFAULT_STYLE } from '../src/core/cell/types'
 import { seedTemplatesIfEmpty, reseedTemplates } from '../src/utils/seed'
@@ -78,7 +79,7 @@ async function testSeedParameters() {
   console.log('\n[测试3] 预制报表参数示例')
   await reseedTemplates()
   const list = await listTemplates()
-  assert(list.length === 2, `应有 2 个预制模板，实际 ${list.length}`)
+  assert(list.length === 8, `应有 8 个预制模板，实际 ${list.length}`)
 
   const sales = list.find((t) => t.name === '销售明细报表')!
   assert(!!sales, '应存在销售明细报表')
@@ -100,6 +101,13 @@ async function testSeedParameters() {
   const passScoreParam = score.parameters.find((p) => p.name === 'passScore')
   assert(!!passScoreParam, '应有 passScore 参数')
   assert(passScoreParam!.defaultValue === '60', 'passScore 默认值应为 60')
+
+  const bindingDemo = list.find((t) => t.name === '数据绑定聚合与条件格式示例')
+  assert(!!bindingDemo, '应存在数据绑定聚合与条件格式示例模板')
+  assert((bindingDemo?.conditionFormats?.length ?? 0) >= 12, '条件格式示例应覆盖常见规则、数据集变量规则与规格示例')
+  const bindingText = JSON.stringify(bindingDemo?.cells ?? [])
+  assert(bindingText.includes('group(规格分组)'), '应包含规格分组聚合示例')
+  assert(bindingText.includes('distinct(规格去重)'), '应包含规格去重聚合示例')
 }
 
 /** 测试空模板保存（回归） */
@@ -171,6 +179,93 @@ function testStyleOnMergedCell() {
   assert(main.rowSpan === 2, '合并行跨度应为 2')
 }
 
+/** 测试插入行列后公式引用自动平移 */
+function testFormulaRefsFollowInsert() {
+  console.log('\n[测试8] 插入行列后公式引用自动跟随')
+  const grid = new Grid(6, 6)
+  grid.setCellContent(0, 0, '1')
+  grid.setCellContent(1, 0, '2')
+  grid.setCellContent(2, 1, '=A1+A2')
+  grid.setCellContent(3, 1, '=sum(A1:A2)')
+
+  grid.insertRow(1)
+  assert(grid.getRealCell(3, 1)!.content === '=A1+A3', `插入行后单格引用应变为 =A1+A3，实际 ${grid.getRealCell(3, 1)!.content}`)
+  assert(grid.getRealCell(4, 1)!.content === '=sum(A1:A3)', `插入行后范围引用应变为 =sum(A1:A3)，实际 ${grid.getRealCell(4, 1)!.content}`)
+
+  const grid2 = new Grid(6, 6)
+  grid2.setCellContent(0, 0, '1')
+  grid2.setCellContent(0, 1, '2')
+  grid2.setCellContent(1, 2, '=A1+B1')
+  grid2.setCellContent(2, 2, '=sum(A1:B1)')
+
+  grid2.insertCol(1)
+  assert(grid2.getRealCell(1, 3)!.content === '=A1+C1', `插入列后单格引用应变为 =A1+C1，实际 ${grid2.getRealCell(1, 3)!.content}`)
+  assert(grid2.getRealCell(2, 3)!.content === '=sum(A1:C1)', `插入列后范围引用应变为 =sum(A1:C1)，实际 ${grid2.getRealCell(2, 3)!.content}`)
+}
+
+/** 测试删除行列后公式引用自动收缩/修正 */
+function testFormulaRefsFollowDelete() {
+  console.log('\n[测试9] 删除行列后公式引用自动跟随')
+  const grid = new Grid(6, 6)
+  grid.setCellContent(0, 0, '1')
+  grid.setCellContent(1, 0, '2')
+  grid.setCellContent(2, 0, '3')
+  grid.setCellContent(3, 1, '=A1+A3')
+  grid.setCellContent(4, 1, '=sum(A1:A3)')
+
+  grid.deleteRow(1)
+  assert(grid.getRealCell(2, 1)!.content === '=A1+A2', `删除行后单格引用应变为 =A1+A2，实际 ${grid.getRealCell(2, 1)!.content}`)
+  assert(grid.getRealCell(3, 1)!.content === '=sum(A1:A2)', `删除行后范围引用应变为 =sum(A1:A2)，实际 ${grid.getRealCell(3, 1)!.content}`)
+
+  const grid2 = new Grid(6, 6)
+  grid2.setCellContent(0, 0, '1')
+  grid2.setCellContent(0, 1, '2')
+  grid2.setCellContent(0, 2, '3')
+  grid2.setCellContent(1, 3, '=A1+C1')
+  grid2.setCellContent(2, 3, '=sum(A1:C1)')
+
+  grid2.deleteCol(1)
+  assert(grid2.getRealCell(1, 2)!.content === '=A1+B1', `删除列后单格引用应变为 =A1+B1，实际 ${grid2.getRealCell(1, 2)!.content}`)
+  assert(grid2.getRealCell(2, 2)!.content === '=sum(A1:B1)', `删除列后范围引用应变为 =sum(A1:B1)，实际 ${grid2.getRealCell(2, 2)!.content}`)
+}
+
+/** 测试绝对引用在插删行列时保持固定 */
+function testAbsoluteRefsRemainStable() {
+  console.log('\n[测试10] 绝对引用在结构编辑后保持固定')
+  const grid = new Grid(6, 6)
+  grid.setCellContent(2, 2, '=sum($A$1,A$2,$B1,B2)')
+
+  grid.insertRow(1)
+  grid.insertCol(1)
+  assert(grid.getRealCell(3, 3)!.content === '=sum($A$1,A$2,$B1,C3)', `插入行列后绝对/相对混合引用应正确，实际 ${grid.getRealCell(3, 3)!.content}`)
+
+  grid.deleteRow(1)
+  grid.deleteCol(1)
+  assert(grid.getRealCell(2, 2)!.content === '=sum($A$1,A$2,$B1,B2)', `删除回退后绝对/相对混合引用应恢复，实际 ${grid.getRealCell(2, 2)!.content}`)
+}
+
+/** 测试主格引用在插删行列后自动跟随 */
+function testMasterRefsFollowStructureChanges() {
+  console.log('\n[测试11] 主格引用在结构编辑后自动跟随')
+  const grid = new Grid(6, 6)
+  const master = grid.getRealCell(1, 1)!
+  master.expandDirection = 'down'
+  const child = grid.getRealCell(1, 2)!
+  child.leftMasterCell = 'B2'
+  const topChild = grid.getRealCell(2, 1)!
+  topChild.topMasterCell = 'B2'
+
+  grid.insertRow(0)
+  grid.insertCol(0)
+  assert(grid.getRealCell(2, 3)!.leftMasterCell === 'C3', `插入后 leftMasterCell 应为 C3，实际 ${grid.getRealCell(2, 3)!.leftMasterCell}`)
+  assert(grid.getRealCell(3, 2)!.topMasterCell === 'C3', `插入后 topMasterCell 应为 C3，实际 ${grid.getRealCell(3, 2)!.topMasterCell}`)
+
+  grid.deleteRow(0)
+  grid.deleteCol(0)
+  assert(grid.getRealCell(1, 2)!.leftMasterCell === 'B2', `删除后 leftMasterCell 应恢复 B2，实际 ${grid.getRealCell(1, 2)!.leftMasterCell}`)
+  assert(grid.getRealCell(2, 1)!.topMasterCell === 'B2', `删除后 topMasterCell 应恢复 B2，实际 ${grid.getRealCell(2, 1)!.topMasterCell}`)
+}
+
 async function main() {
   console.log('=== VReport 新功能回归测试 ===')
 
@@ -181,12 +276,15 @@ async function main() {
   testExcelStyleFormulas()
   testStyleSerializationWithRange()
   testStyleOnMergedCell()
+  testFormulaRefsFollowInsert()
+  testFormulaRefsFollowDelete()
+  testAbsoluteRefsRemainStable()
+  testMasterRefsFollowStructureChanges()
 
   console.log(`\n=== 测试结果: ${passed} 通过, ${failed} 失败 ===`)
-  if (failed > 0) process.exit(1)
 }
 
-main().catch((e) => {
-  console.error('测试执行出错:', e)
-  process.exit(1)
+it('新功能回归', async () => {
+  await main()
+  expect(failed, `存在 ${failed} 个失败断言`).toBe(0)
 })

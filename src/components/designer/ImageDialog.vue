@@ -5,7 +5,7 @@
     width="560px"
     :destroyOnClose="true"
     @ok="onOk"
-    @cancel="onCancel"
+    @cancel="close"
   >
     <a-form layout="vertical">
       <a-form-item label="图片来源">
@@ -82,10 +82,11 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed, watch } from 'vue'
+import { computed } from 'vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import type { ImageConfig } from '@/types'
+import { useFormDialog } from '@/composables/useFormDialog'
 
 const props = defineProps<{ visible: boolean; initial?: ImageConfig }>()
 const emit = defineEmits<{
@@ -93,34 +94,24 @@ const emit = defineEmits<{
   (e: 'confirm', config: ImageConfig): void
 }>()
 
-const form = reactive<ImageConfig>({
-  source: 'url',
-  url: '',
-  base64: undefined,
-  mimeType: undefined,
-  width: 0,
-  height: 0,
-  fit: 'contain'
-})
+function createDefaults(): ImageConfig {
+  return {
+    source: 'url',
+    url: '',
+    base64: undefined,
+    mimeType: undefined,
+    width: 0,
+    height: 0,
+    fit: 'contain'
+  }
+}
 
-watch(
-  () => props.visible,
-  (v) => {
-    if (v) {
-      Object.assign(form, {
-        source: 'url',
-        url: '',
-        base64: undefined,
-        mimeType: undefined,
-        width: 0,
-        height: 0,
-        fit: 'contain',
-        ...(props.initial ?? {})
-      })
-    }
-  },
-  { immediate: true }
-)
+const { form, close } = useFormDialog<ImageConfig>({
+  isVisible: () => props.visible,
+  createDefaults,
+  getInitial: () => props.initial,
+  onClose: () => emit('update:visible', false)
+})
 
 const dataUri = computed(() => {
   if (!form.base64) return ''
@@ -168,11 +159,7 @@ function onOk() {
     config.url = undefined
   }
   emit('confirm', config)
-  emit('update:visible', false)
-}
-
-function onCancel() {
-  emit('update:visible', false)
+  close()
 }
 </script>
 

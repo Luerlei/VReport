@@ -35,6 +35,20 @@ export interface RenderedCell {
   context?: ExpandContext
 }
 
+/** 展开冲突告警详情（用于 UI 定位） */
+export interface ExpandWarning {
+  /** 告警文案 */
+  message: string
+  /** 来源模板单元格名（可定位回设计器） */
+  sourceCell?: string
+  /** 覆盖到的模板单元格名 */
+  targetCell?: string
+  /** 渲染网格行（0-based） */
+  renderRow?: number
+  /** 渲染网格列（0-based） */
+  renderCol?: number
+}
+
 /** 展开结果 */
 export interface ExpandResult {
   /** 渲染网格 */
@@ -43,6 +57,10 @@ export interface ExpandResult {
   rowHeights: number[]
   /** 列宽列表 */
   colWidths: number[]
+  /** 展开阶段发现的覆盖/冲突告警 */
+  warnings?: string[]
+  /** 展开阶段结构化告警（用于点击定位） */
+  warningDetails?: ExpandWarning[]
 }
 
 /**
@@ -65,6 +83,15 @@ export class ExpandEngine {
   private renderedColWidths: number[]
   /** 参数值（用于表达式 ${param.xxx}） */
   private params?: Record<string, unknown>
+  /** 展开告警 */
+  private warnings = new Set<string>()
+  /** 展开告警详情 */
+  private warningDetails: ExpandWarning[] = []
+  /** 右展开行带游标：key=row+context，value=下一可用列 */
+  private rightBandCursor = new Map<string, number>()
+  /** 上下文对象稳定 ID（用于 rightBandCursor 分区） */
+  private contextIdentity = new WeakMap<ExpandContext, number>()
+  private contextIdSeed = 1
 
   constructor(
     templateCells: (Cell | null)[][],
@@ -89,14 +116,20 @@ export class ExpandEngine {
 
   /** 执行展开 */
   expand(): ExpandResult {
+    this.warnings.clear()
+    this.warningDetails = []
+    this.rightBandCursor.clear()
     // 若无展开单元格，直接克隆模板
     const roots = buildMasterTree(this.templateCells)
     if (roots.length === 0) {
       this.cloneTemplateAsIs()
+      this.applyRootContextToAllCells()
       return {
         grid: this.rendered,
         rowHeights: this.renderedRowHeights,
-        colWidths: this.renderedColWidths
+        colWidths: this.renderedColWidths,
+        warnings: Array.from(this.warnings),
+        warningDetails: this.warningDetails
       }
     }
 
@@ -104,15 +137,38 @@ export class ExpandEngine {
     this.initRenderedFromTemplate()
 
     const { downRoots, rightRoots } = sortRoots(roots)
-    const rootCtx = createRootContext(this.params)
+    const rootCtx = createRootContext(this.params, this.getDatasetRowsRecord())
 
     // 先处理向下展开的根节点
     for (const root of downRoots) {
-      this.expandDown(root, root.cell.row, rootCtx)
+      const start = this.findRenderedPositionForTemplateCell(root.cell.row, root.cell.col, rootCtx)
+      this.expandDown(root, start?.row ?? root.cell.row, rootCtx)
     }
     // 再处理向右展开的根节点
-    for (const root of rightRoots) {
-      this.expandRight(root, root.cell.col, rootCtx)
+    const orderedRightRoots = [...rightRoots].sort((a, b) => a.cell.row - b.cell.row || a.cell.col - b.cell.col)
+    const rightRootBandRowByTemplateRow = new Map<number, number>()
+    for (const root of orderedRightRoots) {
+      const skipReason = this.getSkipReasonForRightRoot(root, downRoots, orderedRightRoots)
+      if (skipReason) {
+        this.clearRenderedCellsForTemplateSource(root.cell.row, root.cell.col)
+        this.addWarning({
+          message: `已忽略右展开根 ${root.cell.name}（${skipReason}）`,
+          sourceCell: root.cell.name,
+          renderRow: root.cell.row,
+          renderCol: root.cell.col
+        })
+        continue
+      }
+      const start = this.findRenderedPositionForTemplateCell(root.cell.row, root.cell.col, rootCtx)
+      const rememberedBandRow = rightRootBandRowByTemplateRow.get(root.cell.row)
+      const bandRow = rememberedBandRow ?? (start?.row ?? root.cell.row)
+      if (rememberedBandRow == null) {
+        rightRootBandRowByTemplateRow.set(root.cell.row, bandRow)
+      }
+      const requestedCol = start?.col ?? root.cell.col
+      const startCol = this.reserveRightBandStart(bandRow, requestedCol, rootCtx)
+      const endCol = this.expandRight(root, startCol, rootCtx, bandRow)
+      this.advanceRightBandCursor(bandRow, rootCtx, endCol + 1)
     }
 
     // 填充非展开单元格
@@ -121,8 +177,17 @@ export class ExpandEngine {
     return {
       grid: this.rendered,
       rowHeights: this.renderedRowHeights,
-      colWidths: this.renderedColWidths
+      colWidths: this.renderedColWidths,
+      warnings: Array.from(this.warnings),
+      warningDetails: this.warningDetails
     }
+  }
+
+  /** 记录告警（基于 message 去重，同时保留结构化字段） */
+  private addWarning(detail: ExpandWarning) {
+    if (this.warnings.has(detail.message)) return
+    this.warnings.add(detail.message)
+    this.warningDetails.push(detail)
   }
 
   /** 无展开时直接克隆模板 */
@@ -146,6 +211,26 @@ export class ExpandEngine {
     this.renderedColWidths = [...this.templateColWidths]
   }
 
+  /** 无展开场景下，为所有单元格补充根上下文（含数据集缓存） */
+  private applyRootContextToAllCells() {
+    const rootCtx = createRootContext(this.params, this.getDatasetRowsRecord())
+    for (let r = 0; r < this.rendered.length; r++) {
+      for (let c = 0; c < this.rendered[r].length; c++) {
+        const rc = this.rendered[r][c]
+        if (rc) rc.context = rootCtx
+      }
+    }
+  }
+
+  /** 将数据集缓存转为普通对象，供表达式上下文安全传递 */
+  private getDatasetRowsRecord(): Record<string, DataRow[]> {
+    const record: Record<string, DataRow[]> = {}
+    for (const [name, rows] of this.dataSets.entries()) {
+      record[name] = rows
+    }
+    return record
+  }
+
   /** 初始化渲染网格为模板大小 */
   private initRenderedFromTemplate() {
     this.cloneTemplateAsIs()
@@ -159,6 +244,8 @@ export class ExpandEngine {
    */
   private expandDown(node: MasterNode, startRow: number, parentCtx: ExpandContext): number {
     const cell = node.cell
+    const anchor = this.findRenderedPositionForTemplateCell(cell.row, cell.col, parentCtx)
+    const renderedCol = anchor?.col ?? cell.col
     const data = this.getData(cell.dataset)
     const rowCount = Math.max(data.length, 1)
 
@@ -181,18 +268,19 @@ export class ExpandEngine {
         rowData,
         cell.dataset ?? '',
         [row, row],
-        [cell.col, cell.col + cell.colSpan - 1]
+        [renderedCol, renderedCol + cell.colSpan - 1]
       )
       // 填充本单元格（展开主格）
-      this.setRenderedCell(row, cell.col, cell, ctx)
+      this.setRenderedCell(row, renderedCol, cell, ctx)
       // 处理同行其他单元格（非展开的跟随填充，赋予上下文）
-      this.fillRowCells(row, cell, ctx)
+      this.fillRowCells(row, renderedCol, ctx)
       // 递归处理子节点
       for (const child of node.leftChildren) {
         this.expandDown(child, row, ctx)
       }
       for (const child of node.topChildren) {
-        this.expandRight(child, child.cell.col, ctx)
+        const childAnchor = this.findRenderedPositionForTemplateCell(child.cell.row, child.cell.col, ctx)
+        this.expandRight(child, childAnchor?.col ?? child.cell.col, ctx)
       }
     }
 
@@ -202,15 +290,32 @@ export class ExpandEngine {
   /**
    * 向右展开
    */
-  private expandRight(node: MasterNode, startCol: number, parentCtx: ExpandContext): number {
+  private expandRight(
+    node: MasterNode,
+    startCol: number,
+    parentCtx: ExpandContext,
+    forcedRenderedRow?: number
+  ): number {
     const cell = node.cell
+    const anchor = this.findRenderedPositionForTemplateCell(cell.row, cell.col, parentCtx)
+    const renderedRow = forcedRenderedRow ?? anchor?.row ?? cell.row
     const data = this.getData(cell.dataset)
     const effectiveData = data.length > 0 ? data : [{}]
     const effectiveColCount = data.length > 0 ? data.length : 1
 
     // 插入列（从模板对应列克隆单元格）
-    if (effectiveColCount > 1) {
-      this.insertColsFromTemplate(startCol + 1, effectiveColCount - 1, cell.col)
+    // 注意：克隆落位必须使用「渲染锚点行」(renderedRow)，而非模板行 cell.row。
+    // 前序向下展开会把本行整体下推，若仍按模板行索引落位，克隆列会落在错误的
+    // 渲染行上，形成游离单元格（后续 fillColCells 还会误填数据）。
+    if (effectiveColCount > 1 && this.shouldInsertColsForRightExpand(renderedRow, cell.rowSpan, startCol, effectiveColCount)) {
+      this.insertColsFromTemplate(
+        startCol + 1,
+        effectiveColCount - 1,
+        cell.col,
+        renderedRow,
+        cell.rowSpan,
+        cell.row
+      )
     }
 
     for (let i = 0; i < effectiveColCount; i++) {
@@ -220,31 +325,81 @@ export class ExpandEngine {
         parentCtx,
         rowData,
         cell.dataset ?? '',
-        [cell.row, cell.row + cell.rowSpan - 1],
+        [renderedRow, renderedRow + cell.rowSpan - 1],
         [col, col]
       )
-      this.setRenderedCell(cell.row, col, cell, ctx)
+      this.setRenderedCell(renderedRow, col, cell, ctx)
       this.fillColCells(col, cell, ctx)
       // 递归子节点
       for (const child of node.topChildren) {
-        this.expandRight(child, col, ctx)
+        const childAnchor = this.findRenderedPositionForTemplateCell(child.cell.row, child.cell.col, ctx)
+        const childRow = childAnchor?.row ?? renderedRow
+        const childRequestedCol = childAnchor?.col ?? col
+        const childStartCol = this.reserveRightBandStart(childRow, childRequestedCol, ctx)
+        const childEndCol = this.expandRight(child, childStartCol, ctx)
+        this.advanceRightBandCursor(childRow, ctx, childEndCol + 1)
       }
       for (const child of node.leftChildren) {
-        this.expandDown(child, child.cell.row, ctx)
+        const childAnchor = this.findRenderedPositionForTemplateCell(child.cell.row, child.cell.col, ctx)
+        this.expandDown(child, childAnchor?.row ?? child.cell.row, ctx)
       }
     }
 
     return startCol + effectiveColCount - 1
   }
 
+  /**
+   * 右展开是否需要真实插列：
+   * - 若目标行带内已有足够空槽位（由前序 right 展开产生），复用现有列，避免再次全局插列影响下方静态区。
+   * - 若存在非空占位冲突或越界，则继续插列保持原有兼容行为。
+   */
+  private shouldInsertColsForRightExpand(
+    renderedAnchorRow: number,
+    anchorRowSpan: number,
+    startCol: number,
+    effectiveColCount: number
+  ): boolean {
+    const rowStart = Math.max(0, renderedAnchorRow)
+    const rowEnd = Math.max(rowStart, rowStart + Math.max(1, anchorRowSpan) - 1)
+    const targetStartCol = startCol + 1
+    const targetEndCol = startCol + effectiveColCount - 1
+    const width = this.rendered[0]?.length ?? 0
+
+    if (targetEndCol >= width) return true
+
+    for (let r = rowStart; r <= rowEnd; r++) {
+      for (let c = targetStartCol; c <= targetEndCol; c++) {
+        const rc = this.rendered[r]?.[c]
+        if (!rc) continue
+        if (this.isReusableRightSlot(rc, rowStart, rowEnd)) continue
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * 可复用的 right 占位：同一行带内、尚未绑定 context 的 right 模板根占位。
+   * 这类单元格通常是“后续待处理的右展开根”，不应触发全局插列。
+   */
+  private isReusableRightSlot(rc: RenderedCell, rowStart: number, rowEnd: number): boolean {
+    if (rc.context) return false
+    if (rc.row < rowStart || rc.row > rowEnd) return false
+    if (rc.source.expandDirection === 'right') return true
+
+    if (rc.source.expandDirection !== 'none') return false
+    if (rc.source.dataset || rc.source.fieldName) return false
+    return (rc.source.content ?? '').trim() === ''
+  }
+
   /** 填充同行其他单元格的上下文（从属单元格跟随主格展开） */
-  private fillRowCells(row: number, masterCell: Cell, ctx: ExpandContext) {
-    // 展开感知的单元格（expandDirection !== 'none'）由自己的展开逻辑处理上下文
-    // 无展开方向的跟随单元格（expandDirection === 'none'）继承主格上下文
+  private fillRowCells(row: number, masterRenderedCol: number, ctx: ExpandContext) {
+    // 同行所有未设置 context 的单元格继承主格上下文
+    // 不再用 source.row 比较（粘贴后主格 row 已变，无法匹配模板行）
     for (let c = 0; c < this.rendered[row].length; c++) {
-      if (c === masterCell.col) continue
+      if (c === masterRenderedCol) continue
       const rc = this.rendered[row][c]
-      if (rc && !rc.context && rc.source.expandDirection === 'none') {
+      if (rc && !rc.context) {
         rc.context = ctx
       }
     }
@@ -252,12 +407,13 @@ export class ExpandEngine {
 
   /** 填充非展开单元格（无主格的普通单元格） */
   private fillNonExpandCells() {
+    const rootCtx = createRootContext(this.params, this.getDatasetRowsRecord())
     for (let r = 0; r < this.rendered.length; r++) {
       for (let c = 0; c < this.rendered[r].length; c++) {
         const rc = this.rendered[r][c]
         if (rc && !rc.context) {
           // 无上下文的单元格使用根上下文
-          rc.context = createRootContext(this.params)
+          rc.context = rootCtx
         }
       }
     }
@@ -267,7 +423,7 @@ export class ExpandEngine {
   private fillColCells(col: number, masterCell: Cell, ctx: ExpandContext) {
     for (let r = 0; r < this.rendered.length; r++) {
       const rc = this.rendered[r]?.[col]
-      if (rc && !rc.context && rc.source.expandDirection === 'none' && rc.source.col === masterCell.col) {
+      if (rc && !rc.context && rc.source.col === masterCell.col) {
         rc.context = ctx
       }
     }
@@ -277,6 +433,17 @@ export class ExpandEngine {
   private setRenderedCell(row: number, col: number, source: Cell, ctx: ExpandContext) {
     while (row >= this.rendered.length) this.appendRow()
     while (col >= this.rendered[0].length) this.appendCol()
+    const existing = this.rendered[row][col]
+    const existingReusable = existing ? this.isReusableRightSlot(existing, row, row) : false
+    if (existing && !existingReusable && (existing.source.row !== source.row || existing.source.col !== source.col)) {
+      this.addWarning({
+        message: `单元格 ${existing.source.name} 与 ${source.name} 在渲染坐标 ${colIndex(col)}${row + 1} 发生覆盖冲突`,
+        sourceCell: source.name,
+        targetCell: existing.source.name,
+        renderRow: row,
+        renderCol: col
+      })
+    }
     this.rendered[row][col] = {
       source: { ...source },
       row,
@@ -289,6 +456,18 @@ export class ExpandEngine {
     for (let r = row; r < row + source.rowSpan; r++) {
       for (let c = col; c < col + source.colSpan; c++) {
         if (r === row && c === col) continue
+        if (this.rendered[r]?.[c]) {
+          const covered = this.rendered[r][c]
+          if (covered && (covered.source.row !== source.row || covered.source.col !== source.col)) {
+            this.addWarning({
+              message: `合并单元格 ${source.name} 覆盖了 ${covered.source.name}（渲染坐标 ${colIndex(c)}${r + 1}）`,
+              sourceCell: source.name,
+              targetCell: covered.source.name,
+              renderRow: r,
+              renderCol: c
+            })
+          }
+        }
         if (this.rendered[r]) this.rendered[r][c] = null
       }
     }
@@ -354,10 +533,32 @@ export class ExpandEngine {
    * @param count 插入列数
    * @param templateCol 模板列索引
    */
-  private insertColsFromTemplate(at: number, count: number, templateCol: number) {
+  /**
+   * 从模板对应列克隆单元格并插入新列（仅克隆展开锚点所在行段，避免覆盖无关静态区域）
+   * @param at 插入位置
+   * @param count 插入列数
+   * @param templateCol 模板列索引
+   * @param renderedAnchorRow 展开锚点在「渲染网格」中的行（前序展开后可能已偏移）
+   * @param anchorRowSpan 展开锚点行跨度
+   * @param templateAnchorRow 展开锚点模板行（用于取模板单元格内容/样式）
+   */
+  private insertColsFromTemplate(
+    at: number,
+    count: number,
+    templateCol: number,
+    renderedAnchorRow: number,
+    anchorRowSpan: number,
+    templateAnchorRow: number
+  ) {
+    const rowStart = Math.max(0, renderedAnchorRow)
+    const rowEnd = Math.max(rowStart, rowStart + Math.max(1, anchorRowSpan) - 1)
     for (let i = 0; i < count; i++) {
       for (let r = 0; r < this.rendered.length; r++) {
-        const tplCell = this.templateCells[r]?.[templateCol]
+        const inAnchorBand = r >= rowStart && r <= rowEnd
+        // 落位用渲染行 r，取模板内容用「模板锚点行 + 段内偏移」，两者解耦。
+        const tplCell = inAnchorBand
+          ? this.templateCells[templateAnchorRow + (r - rowStart)]?.[templateCol]
+          : null
         const newCell = tplCell
           ? {
               source: { ...tplCell, style: { ...tplCell.style } },
@@ -406,4 +607,185 @@ export class ExpandEngine {
     if (!datasetName) return []
     return this.dataSets.get(datasetName) ?? []
   }
+
+  /** 查找模板单元格当前在渲染网格中的位置（用于前序展开后坐标自动跟随） */
+  private findRenderedPositionForTemplateCell(
+    templateRow: number,
+    templateCol: number,
+    preferredContext?: ExpandContext
+  ): { row: number; col: number } | null {
+    const candidates: RenderedCell[] = []
+    for (let r = 0; r < this.rendered.length; r++) {
+      for (let c = 0; c < this.rendered[r].length; c++) {
+        const rc = this.rendered[r][c]
+        if (rc && rc.source.row === templateRow && rc.source.col === templateCol) {
+          candidates.push(rc)
+        }
+      }
+    }
+    if (!candidates.length) return null
+    if (!preferredContext || candidates.length === 1) {
+      return { row: candidates[0].row, col: candidates[0].col }
+    }
+
+    // 根上下文阶段优先选择“尚未被展开上下文占用”的候选，
+    // 避免被上方 down 展开产生的克隆行抢占锚点（会导致 right 展开落位错乱）。
+    if (this.isRootContext(preferredContext)) {
+      const untouched = candidates.filter((c) => !c.context)
+      if (untouched.length) {
+        const bestUntouched = untouched.reduce((best, cur) => {
+          const curDist = Math.abs(cur.row - templateRow) + Math.abs(cur.col - templateCol)
+          const bestDist = Math.abs(best.row - templateRow) + Math.abs(best.col - templateCol)
+          return curDist < bestDist ? cur : best
+        })
+        return { row: bestUntouched.row, col: bestUntouched.col }
+      }
+    }
+
+    let best = candidates[0]
+    let bestScore = -1
+    for (const candidate of candidates) {
+      const score = this.scoreContextAffinity(preferredContext, candidate.context)
+      if (score > bestScore) {
+        best = candidate
+        bestScore = score
+      }
+    }
+    return { row: best.row, col: best.col }
+  }
+
+  /** 根上下文：无父级、无当前行数据、无当前数据集名 */
+  private isRootContext(ctx: ExpandContext): boolean {
+    return !ctx.parent && !ctx.rowData && !ctx.datasetName
+  }
+
+  /** 上下文亲和度：优先同一上下文实例，其次共享祖先/数据行/数据集名 */
+  private scoreContextAffinity(a?: ExpandContext, b?: ExpandContext): number {
+    if (!a || !b) return 0
+    if (a === b) return 1000
+
+    const chainA = this.getContextChain(a)
+    const chainB = this.getContextChain(b)
+    for (let i = 0; i < chainA.length; i++) {
+      const idx = chainB.indexOf(chainA[i])
+      if (idx >= 0) return 800 - i - idx
+    }
+
+    for (let i = 0; i < chainA.length; i++) {
+      for (let j = 0; j < chainB.length; j++) {
+        if (chainA[i].rowData && chainA[i].rowData === chainB[j].rowData) {
+          return 600 - i - j
+        }
+      }
+    }
+
+    if (a.datasetName && b.datasetName && a.datasetName === b.datasetName) {
+      return 200
+    }
+    return 1
+  }
+
+  private getContextChain(ctx: ExpandContext): ExpandContext[] {
+    const chain: ExpandContext[] = []
+    let cur: ExpandContext | undefined = ctx
+    while (cur) {
+      chain.push(cur)
+      cur = cur.parent
+    }
+    return chain
+  }
+
+  /** 分配 right 展开起始列：同一渲染行+上下文采用并排布局 */
+  private reserveRightBandStart(renderedRow: number, requestedStartCol: number, ctx: ExpandContext): number {
+    const key = this.rightBandKey(renderedRow, ctx)
+    const nextCol = this.rightBandCursor.get(key)
+    if (nextCol == null) return requestedStartCol
+    return Math.max(requestedStartCol, nextCol)
+  }
+
+  /** 推进 right 展开行带游标 */
+  private advanceRightBandCursor(renderedRow: number, ctx: ExpandContext, nextFreeCol: number) {
+    const key = this.rightBandKey(renderedRow, ctx)
+    const prev = this.rightBandCursor.get(key)
+    if (prev == null) {
+      this.rightBandCursor.set(key, nextFreeCol)
+      return
+    }
+    this.rightBandCursor.set(key, Math.max(prev, nextFreeCol))
+  }
+
+  private rightBandKey(renderedRow: number, ctx: ExpandContext): string {
+    return `${renderedRow}|${this.getContextIdentity(ctx)}`
+  }
+
+  private getContextIdentity(ctx: ExpandContext): number {
+    const existing = this.contextIdentity.get(ctx)
+    if (existing != null) return existing
+    const id = this.contextIdSeed++
+    this.contextIdentity.set(ctx, id)
+    return id
+  }
+
+  /**
+   * 识别“疑似重复右展开根”：同列已有同 dataset.field 的 down 根时，
+   * 右展开根常由历史编辑残留造成，会把静态区误填充（如附件中的 B8/C8）。
+   */
+  private shouldSkipLikelyStrayRightRoot(root: MasterNode, downRoots: MasterNode[]): boolean {
+    const cell = root.cell
+    if (cell.expandDirection !== 'right') return false
+    if (cell.leftMasterCell || cell.topMasterCell) return false
+    if (!cell.dataset || !cell.fieldName) return false
+
+    return downRoots.some((d) => {
+      const dc = d.cell
+      return (
+        dc.row < cell.row &&
+        dc.col === cell.col &&
+        dc.dataset === cell.dataset &&
+        dc.fieldName === cell.fieldName
+      )
+    })
+  }
+
+  /** 同行存在多个 right 根通常是用户有意配置，不应按“游离残留”直接抑制 */
+  private hasSiblingRightRootInSameRow(root: MasterNode, rightRoots: MasterNode[]): boolean {
+    const row = root.cell.row
+    return rightRoots.some((r) => r !== root && r.cell.expandDirection === 'right' && r.cell.row === row)
+  }
+
+  private getSkipReasonForRightRoot(
+    root: MasterNode,
+    downRoots: MasterNode[],
+    rightRoots: MasterNode[]
+  ): string | null {
+    if (!this.hasSiblingRightRootInSameRow(root, rightRoots) && this.shouldSkipLikelyStrayRightRoot(root, downRoots)) {
+      return '与同列向下展开重复'
+    }
+    return null
+  }
+
+  /** 清理指定模板源单元格在渲染网格中的内容，避免残留占位变量被误显示 */
+  private clearRenderedCellsForTemplateSource(templateRow: number, templateCol: number) {
+    for (let r = 0; r < this.rendered.length; r++) {
+      for (let c = 0; c < this.rendered[r].length; c++) {
+        const rc = this.rendered[r][c]
+        if (!rc) continue
+        if (rc.source.row !== templateRow || rc.source.col !== templateCol) continue
+        rc.source.content = ''
+        rc.source.dataset = undefined
+        rc.source.fieldName = undefined
+        rc.source.expandDirection = 'none'
+      }
+    }
+  }
+}
+
+function colIndex(col: number): string {
+  let name = ''
+  let n = col
+  while (n >= 0) {
+    name = String.fromCharCode(65 + (n % 26)) + name
+    n = Math.floor(n / 26) - 1
+  }
+  return name
 }

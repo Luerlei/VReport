@@ -9,6 +9,8 @@ import { getTemplate, saveTemplate, deleteTemplate as dbDelete, listTemplates } 
 import { Grid } from '@/core/cell/Grid'
 import { uid } from '@/utils/id'
 import { useHistoryStore } from './history'
+import { ExpandEngine, type ExpandWarning } from '@/core/engine/ExpandEngine'
+import { fetchData } from '@/core/datasource/ProviderRegistry'
 
 export const useReportStore = defineStore('report', () => {
   /** 当前编辑的模板 */
@@ -52,6 +54,44 @@ export const useReportStore = defineStore('report', () => {
     await saveTemplate(currentTemplate.value)
     dirty.value = false
     await loadList()
+  }
+
+  /**
+   * 保存前校验展开冲突/覆盖风险。
+   * 返回 warningDetails，用于设计器展示与定位。
+   */
+  async function checkSaveConflicts(): Promise<ExpandWarning[]> {
+    if (!currentTemplate.value || !grid.value) return []
+    gridToTemplate(grid.value, currentTemplate.value)
+
+    for (const ds of currentTemplate.value.dataSets) {
+      const source = currentTemplate.value.dataSources.find((s) => s.id === ds.sourceId)
+      if (source) {
+        ds.cachedRows = await fetchData(source, ds)
+      }
+    }
+
+    const engine = new ExpandEngine(
+      grid.value.cells,
+      grid.value.rows.map((r) => r.height),
+      grid.value.columns.map((c) => c.width),
+      currentTemplate.value.dataSets,
+      {}
+    )
+    const result = engine.expand()
+    const details = result.warningDetails ?? []
+    if (details.length) return details
+    return (result.warnings ?? []).map((message) => ({ message }))
+  }
+
+  /** 保存前校验并按结果决定是否执行保存 */
+  async function saveWithConflictCheck() {
+    const warnings = await checkSaveConflicts()
+    if (warnings.length) {
+      return { ok: false as const, warnings }
+    }
+    await save()
+    return { ok: true as const, warnings: [] as ExpandWarning[] }
   }
 
   /** 删除模板 */
@@ -117,6 +157,8 @@ export const useReportStore = defineStore('report', () => {
     newTemplate,
     open,
     save,
+    checkSaveConflicts,
+    saveWithConflictCheck,
     remove,
     rename,
     duplicate,

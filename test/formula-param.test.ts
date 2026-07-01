@@ -2,6 +2,7 @@
  * 公式联想与参数筛选测试
  */
 import 'fake-indexeddb/auto'
+import { it, expect } from 'vitest'
 import { matchSuggestions, getParamHint, getAllSuggestions } from '../src/core/expression/Autocomplete'
 import { ParameterEngine } from '../src/core/parameter/ParameterEngine'
 import type { Parameter, DataSet } from '../types'
@@ -60,6 +61,18 @@ function testParamHint() {
   const hint2 = getParamHint('=if(A1>5,', 9)
   assert(!!hint2, '=if(... 内应有参数提示')
   assert(hint2!.name === 'if', '提示应为 if')
+
+  // 当前参数高亮：=if(A1>5, 光标在第一个逗号后 -> activeArg=1
+  assert(hint2!.activeArg === 1, `if 第二参数 activeArg 应为 1，实际 ${hint2!.activeArg}`)
+  assert(Array.isArray(hint2!.args) && hint2!.args!.length === 3, 'if 应返回 3 个参数名')
+
+  // =sum( 光标紧贴左括号 -> activeArg=0
+  assert(hint1!.activeArg === 0, `sum 首参数 activeArg 应为 0，实际 ${hint1!.activeArg}`)
+
+  // 嵌套括号不误计逗号：=if(max(1,2), 外层第一逗号后 -> activeArg=1
+  const hint4 = getParamHint('=if(max(1,2),', 13)
+  assert(!!hint4 && hint4.name === 'if', '嵌套场景应识别外层 if')
+  assert(hint4!.activeArg === 1, `嵌套场景 activeArg 应为 1(忽略内层逗号)，实际 ${hint4!.activeArg}`)
 
   // 非公式无提示
   const hint3 = getParamHint('hello', 5)
@@ -173,10 +186,9 @@ async function main() {
   testDefaultValues()
 
   console.log(`\n=== 测试结果: ${passed} 通过, ${failed} 失败 ===`)
-  if (failed > 0) process.exit(1)
 }
 
-main().catch((e) => {
-  console.error('测试执行出错:', e)
-  process.exit(1)
+it('公式联想与参数筛选', async () => {
+  await main()
+  expect(failed, `存在 ${failed} 个失败断言`).toBe(0)
 })

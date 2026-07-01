@@ -4,6 +4,7 @@
  */
 import type { RenderedCell } from '@/core/engine/ExpandEngine'
 import { styleToCss } from '@/core/render/StyleResolver'
+import { computeFlowColWidths, computeFlowPlacements } from '@/core/render/flowLayout'
 import { ConditionEngine } from '@/core/format/ConditionEngine'
 import type { ConditionFormat } from '@/types'
 import type { Exporter, ExportOptions } from './types'
@@ -37,22 +38,28 @@ export class HtmlExporter implements Exporter {
     title: string,
     condEngine: ConditionEngine
   ): string {
-    const colsHtml = colWidths
+    const flowColWidths = computeFlowColWidths(grid, colWidths)
+    const placements = computeFlowPlacements(grid)
+
+    const colsHtml = flowColWidths
       .map((w) => `<col style="width:${w}px">`)
       .join('')
+
+    const rowMap = new Map<number, string[]>()
+    for (const p of placements) {
+      const style = this.resolveStyle(p.cell, condEngine)
+      const styleStr = this.styleToString(style)
+      const value = this.escapeHtml(this.formatValue(p.cell))
+      const html = `<td rowspan="${p.rowSpan}" colspan="${p.colSpan}" style="${styleStr}">${value}</td>`
+      const arr = rowMap.get(p.rowIndex) ?? []
+      arr.push(html)
+      rowMap.set(p.rowIndex, arr)
+    }
 
     const rowsHtml = grid
       .map((row, r) => {
         const height = rowHeights[r] ?? 28
-        const cellsHtml = row
-          .map((cell) => {
-            if (!cell) return ''
-            const style = this.resolveStyle(cell, condEngine)
-            const styleStr = this.styleToString(style)
-            const value = this.escapeHtml(this.formatValue(cell))
-            return `<td rowspan="${cell.rowSpan}" colspan="${cell.colSpan}" style="${styleStr}">${value}</td>`
-          })
-          .join('')
+        const cellsHtml = (rowMap.get(r) ?? []).join('')
         return `<tr style="height:${height}px">${cellsHtml}</tr>`
       })
       .join('')

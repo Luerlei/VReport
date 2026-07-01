@@ -4,8 +4,6 @@ node_modules/
 # 构建产物
 dist/
 dist-ssr/
-vite.config.d.ts
-vite.config.js
 
 # TypeScript 增量构建缓存
 *.tsbuildinfo

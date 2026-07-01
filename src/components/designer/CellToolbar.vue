@@ -292,6 +292,17 @@
         <template #icon><FunctionOutlined /></template>
       </a-button>
     </a-tooltip>
+
+    <a-divider type="vertical" />
+
+    <!-- 全局条件格式管理 -->
+    <a-tooltip title="管理全局条件格式">
+      <a-button size="small" type="text" @click="showGlobalCondDialog = true">
+        <template #icon><FilterOutlined /></template>
+      </a-button>
+    </a-tooltip>
+
+    <ConditionDialog v-model:visible="showGlobalCondDialog" />
   </div>
 </template>
 
@@ -328,12 +339,15 @@ import {
   BarcodeOutlined,
   BarChartOutlined,
   FunctionOutlined,
-  ColumnHeightOutlined
+  ColumnHeightOutlined,
+  FilterOutlined
 } from '@ant-design/icons-vue'
 import { useReportStore } from '@/stores/report'
 import { useDesignerStore } from '@/stores/designer'
 import { useHistoryStore } from '@/stores/history'
+import { shiftRangeScope } from '@/core/cell/refShift'
 import type { HAlign, BorderEdge } from '@/core/cell/types'
+import ConditionDialog from './ConditionDialog.vue'
 
 const report = useReportStore()
 const designer = useDesignerStore()
@@ -358,6 +372,7 @@ const presetColors = [
 const colorPopover = ref(false)
 const bgPopover = ref(false)
 const sizePopover = ref(false)
+const showGlobalCondDialog = ref(false)
 const customColor = ref('#1f2329')
 const customBg = ref('#ffffff')
 
@@ -521,6 +536,9 @@ function onInsertRow() {
   if (!report.grid) return
   history.pushHistory()
   report.grid.insertRow(designer.selection.startRow)
+  report.currentTemplate?.conditionFormats.forEach((fmt) => {
+    fmt.scope = shiftRangeScope(fmt.scope, { rowInsertIndex: designer.selection.startRow, rowInsertCount: 1 })
+  })
   report.markDirty()
 }
 
@@ -528,6 +546,9 @@ function onInsertCol() {
   if (!report.grid) return
   history.pushHistory()
   report.grid.insertCol(designer.selection.startCol)
+  report.currentTemplate?.conditionFormats.forEach((fmt) => {
+    fmt.scope = shiftRangeScope(fmt.scope, { colInsertIndex: designer.selection.startCol, colInsertCount: 1 })
+  })
   report.markDirty()
 }
 </script>

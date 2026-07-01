@@ -14,6 +14,7 @@ import {
   cellName,
   createCell
 } from './types'
+import { shiftCellRefName, shiftFormulaRefs } from './refShift'
 
 export class Grid {
   /** 二维数组：cells[row][col]，被合并的位置为 null */
@@ -74,6 +75,7 @@ export class Grid {
     const cell = this.getRealCell(row, col)
     if (cell) {
       cell.content = content
+      syncCellBindingFromContent(cell)
       // 仅对纯文本/公式类型自动推断;图片/二维码/条码/图表类型保持不变
       if (
         cell.cellType === 'text' ||
@@ -133,6 +135,7 @@ export class Grid {
     }
     this.cells.splice(index, 0, ...newRows)
     this.rows.splice(index, 0, ...Array.from({ length: count }, (_, i) => ({ index: index + i, height: DEFAULT_ROW_HEIGHT })))
+    shiftFormulaRefsForRowInsert(this.cells, index, count)
     this.refreshIndices()
   }
 
@@ -143,6 +146,7 @@ export class Grid {
       this.cells[r].splice(index, 0, ...newCells)
     }
     this.columns.splice(index, 0, ...Array.from({ length: count }, (_, i) => ({ index: index + i, width: DEFAULT_COL_WIDTH })))
+    shiftFormulaRefsForColInsert(this.cells, index, count)
     this.refreshIndices()
   }
 
@@ -150,6 +154,7 @@ export class Grid {
   deleteRow(index: number, count = 1): void {
     this.cells.splice(index, count)
     this.rows.splice(index, count)
+    shiftFormulaRefsForRowDelete(this.cells, index, count)
     this.refreshIndices()
   }
 
@@ -159,6 +164,7 @@ export class Grid {
       this.cells[r].splice(index, count)
     }
     this.columns.splice(index, count)
+    shiftFormulaRefsForColDelete(this.cells, index, count)
     this.refreshIndices()
   }
 
@@ -312,5 +318,90 @@ export class Grid {
       row.map((c) => (c ? { ...c, style: { ...c.style } } : null))
     )
     return grid
+  }
+}
+
+/**
+ * 内容变更后同步直接数据绑定：
+ * - 若内容是单个 ${ds.field}，自动同步 dataset/fieldName
+ * - 否则清理陈旧的数据绑定与展开主格配置，避免删除变量后仍残留属性
+ */
+function syncCellBindingFromContent(cell: Cell): void {
+  const directBinding = parseDirectDatasetBinding(cell.content)
+  if (directBinding) {
+    cell.dataset = directBinding.dataset
+    cell.fieldName = directBinding.fieldName
+    cell.aggregate = cell.aggregate ?? 'none'
+    return
+  }
+
+  cell.dataset = undefined
+  cell.fieldName = undefined
+  cell.aggregate = undefined
+  cell.expandDirection = 'none'
+  cell.leftMasterCell = undefined
+  cell.topMasterCell = undefined
+}
+
+/** 解析“直接绑定型”数据集变量内容，仅匹配单个 ${ds.field} */
+function parseDirectDatasetBinding(content: string): { dataset: string; fieldName: string } | null {
+  const trimmed = content.trim()
+  const match = trimmed.match(/^\$\{([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\}$/)
+  if (!match) return null
+  return {
+    dataset: match[1],
+    fieldName: match[2]
+  }
+}
+
+function shiftFormulaRefsForRowInsert(cells: (Cell | null)[][], index: number, count: number): void {
+  for (const row of cells) {
+    for (const cell of row) {
+      if (!cell) continue
+      if (cell.content.startsWith('=')) {
+        cell.content = shiftFormulaRefs(cell.content, { rowInsertIndex: index, rowInsertCount: count })
+      }
+      cell.leftMasterCell = shiftCellRefName(cell.leftMasterCell ?? '', { rowInsertIndex: index, rowInsertCount: count }) ?? cell.leftMasterCell
+      cell.topMasterCell = shiftCellRefName(cell.topMasterCell ?? '', { rowInsertIndex: index, rowInsertCount: count }) ?? cell.topMasterCell
+    }
+  }
+}
+
+function shiftFormulaRefsForColInsert(cells: (Cell | null)[][], index: number, count: number): void {
+  for (const row of cells) {
+    for (const cell of row) {
+      if (!cell) continue
+      if (cell.content.startsWith('=')) {
+        cell.content = shiftFormulaRefs(cell.content, { colInsertIndex: index, colInsertCount: count })
+      }
+      cell.leftMasterCell = shiftCellRefName(cell.leftMasterCell ?? '', { colInsertIndex: index, colInsertCount: count }) ?? cell.leftMasterCell
+      cell.topMasterCell = shiftCellRefName(cell.topMasterCell ?? '', { colInsertIndex: index, colInsertCount: count }) ?? cell.topMasterCell
+    }
+  }
+}
+
+function shiftFormulaRefsForRowDelete(cells: (Cell | null)[][], index: number, count: number): void {
+  for (const row of cells) {
+    for (const cell of row) {
+      if (!cell) continue
+      if (cell.content.startsWith('=')) {
+        cell.content = shiftFormulaRefs(cell.content, { rowDeleteIndex: index, rowDeleteCount: count })
+      }
+      cell.leftMasterCell = shiftCellRefName(cell.leftMasterCell ?? '', { rowDeleteIndex: index, rowDeleteCount: count }) ?? cell.leftMasterCell
+      cell.topMasterCell = shiftCellRefName(cell.topMasterCell ?? '', { rowDeleteIndex: index, rowDeleteCount: count }) ?? cell.topMasterCell
+    }
+  }
+}
+
+function shiftFormulaRefsForColDelete(cells: (Cell | null)[][], index: number, count: number): void {
+  for (const row of cells) {
+    for (const cell of row) {
+      if (!cell) continue
+      if (cell.content.startsWith('=')) {
+        cell.content = shiftFormulaRefs(cell.content, { colDeleteIndex: index, colDeleteCount: count })
+      }
+      cell.leftMasterCell = shiftCellRefName(cell.leftMasterCell ?? '', { colDeleteIndex: index, colDeleteCount: count }) ?? cell.leftMasterCell
+      cell.topMasterCell = shiftCellRefName(cell.topMasterCell ?? '', { colDeleteIndex: index, colDeleteCount: count }) ?? cell.topMasterCell
+    }
   }
 }

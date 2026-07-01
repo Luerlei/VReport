@@ -5,7 +5,7 @@
     width="500px"
     :destroyOnClose="true"
     @ok="onOk"
-    @cancel="onCancel"
+    @cancel="close"
   >
     <a-form layout="vertical">
       <a-form-item label="条码类型">
@@ -76,10 +76,11 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import JsBarcode from 'jsbarcode'
 import type { BarcodeConfig } from '@/types'
+import { useFormDialog } from '@/composables/useFormDialog'
 
 const props = defineProps<{ visible: boolean; initial?: BarcodeConfig }>()
 const emit = defineEmits<{
@@ -87,37 +88,27 @@ const emit = defineEmits<{
   (e: 'confirm', config: BarcodeConfig): void
 }>()
 
-const form = reactive<BarcodeConfig>({
-  data: '',
-  format: 'CODE128',
-  width: 200,
-  height: 60,
-  displayValue: true,
-  foreground: '#000000',
-  background: '#ffffff'
-})
-
 const previewSvgRef = ref<SVGSVGElement | null>(null)
 
-watch(
-  () => props.visible,
-  (v) => {
-    if (v) {
-      Object.assign(form, {
-        data: '',
-        format: 'CODE128',
-        width: 200,
-        height: 60,
-        displayValue: true,
-        foreground: '#000000',
-        background: '#ffffff',
-        ...(props.initial ?? {})
-      })
-      nextTick(renderPreview)
-    }
-  },
-  { immediate: true }
-)
+function createDefaults(): BarcodeConfig {
+  return {
+    data: '',
+    format: 'CODE128',
+    width: 200,
+    height: 60,
+    displayValue: true,
+    foreground: '#000000',
+    background: '#ffffff'
+  }
+}
+
+const { form, close } = useFormDialog<BarcodeConfig>({
+  isVisible: () => props.visible,
+  createDefaults,
+  getInitial: () => props.initial,
+  onClose: () => emit('update:visible', false),
+  onOpen: () => nextTick(renderPreview)
+})
 
 watch(form, renderPreview, { deep: true })
 
@@ -155,11 +146,7 @@ function onOk() {
     return
   }
   emit('confirm', { ...form })
-  emit('update:visible', false)
-}
-
-function onCancel() {
-  emit('update:visible', false)
+  close()
 }
 </script>
 

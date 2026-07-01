@@ -12,6 +12,10 @@ export interface FormulaSuggestion {
   signature: string
   category: string
   example?: string
+  /** 参数名列表，用于参数提示中分段高亮 */
+  args?: string[]
+  /** 当前正在输入的参数索引（仅参数提示使用，从 0 开始） */
+  activeArg?: number
 }
 
 /** 获取所有公式建议 */
@@ -43,6 +47,13 @@ function buildSignature(f: FuncDef): string {
   return `${f.name}(...)`
 }
 
+/** 构建参数名列表，用于参数提示分段高亮 */
+function buildArgs(f: FuncDef): string[] {
+  if (f.argCount === 0) return []
+  if (f.argCount === -1) return ['值1', '值2', '…']
+  return Array.from({ length: f.argCount }, (_, i) => `值${i + 1}`)
+}
+
 /**
  * 根据当前输入匹配公式建议
  * @param text 编辑器完整文本
@@ -65,7 +76,7 @@ export function matchSuggestions(text: string, cursorPos: number): FormulaSugges
 }
 
 /**
- * 检测光标所在位置的函数，返回参数提示（含示例）
+ * 检测光标所在位置的函数，返回参数提示（含当前参数索引，用于高亮）
  */
 export function getParamHint(text: string, cursorPos: number): FormulaSuggestion | null {
   if (!text.startsWith('=')) return null
@@ -87,7 +98,9 @@ export function getParamHint(text: string, cursorPos: number): FormulaSuggestion
               argCount: fn.argCount,
               signature: buildSignature(fn),
               category: '',
-              example: fn.example
+              example: fn.example,
+              args: buildArgs(fn),
+              activeArg: countActiveArg(before.substring(i + 1))
             }
           }
         }
@@ -97,6 +110,18 @@ export function getParamHint(text: string, cursorPos: number): FormulaSuggestion
     }
   }
   return null
+}
+
+/** 统计左括号后到光标之间的顶层逗号数量，即当前参数索引 */
+function countActiveArg(argsPart: string): number {
+  let depth = 0
+  let commas = 0
+  for (const ch of argsPart) {
+    if (ch === '(' || ch === '[') depth++
+    else if (ch === ')' || ch === ']') depth--
+    else if (ch === ',' && depth === 0) commas++
+  }
+  return commas
 }
 
 /**

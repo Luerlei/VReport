@@ -5,7 +5,7 @@
     width="780px"
     :destroyOnClose="true"
     @ok="onOk"
-    @cancel="onCancel"
+    @cancel="close"
   >
     <div class="chart-dialog-body">
       <div class="config-side">
@@ -95,12 +95,13 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import * as echarts from 'echarts'
 import { useReportStore } from '@/stores/report'
 import type { ChartConfig, ChartSeries, ChartType } from '@/types'
+import { useFormDialog } from '@/composables/useFormDialog'
 
 const props = defineProps<{ visible: boolean; initial?: ChartConfig }>()
 const emit = defineEmits<{
@@ -110,15 +111,29 @@ const emit = defineEmits<{
 
 const report = useReportStore()
 
-const form = reactive<ChartConfig>({
-  type: 'bar',
-  dataset: undefined,
-  categoryField: undefined,
-  series: [],
-  title: '',
-  legend: true,
-  width: 360,
-  height: 240
+function createDefaults(): ChartConfig {
+  return {
+    type: 'bar',
+    dataset: undefined,
+    categoryField: undefined,
+    series: [],
+    title: '',
+    legend: true,
+    width: 360,
+    height: 240
+  }
+}
+
+const { form, close } = useFormDialog<ChartConfig>({
+  isVisible: () => props.visible,
+  createDefaults,
+  getInitial: () => props.initial,
+  onClose: () => emit('update:visible', false),
+  onOpen: () =>
+    nextTick(() => {
+      initChart()
+      renderPreview()
+    })
 })
 
 const previewRef = ref<HTMLDivElement | null>(null)
@@ -137,30 +152,6 @@ const fields = computed<string[]>(() => {
   }
   return []
 })
-
-watch(
-  () => props.visible,
-  (v) => {
-    if (v) {
-      Object.assign(form, {
-        type: 'bar',
-        dataset: undefined,
-        categoryField: undefined,
-        series: [],
-        title: '',
-        legend: true,
-        width: 360,
-        height: 240,
-        ...(props.initial ?? {})
-      })
-      nextTick(() => {
-        initChart()
-        renderPreview()
-      })
-    }
-  },
-  { immediate: true }
-)
 
 watch(form, renderPreview, { deep: true })
 
@@ -332,11 +323,7 @@ function onOk() {
     return
   }
   emit('confirm', JSON.parse(JSON.stringify(form)))
-  emit('update:visible', false)
-}
-
-function onCancel() {
-  emit('update:visible', false)
+  close()
 }
 </script>
 

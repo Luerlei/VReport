@@ -43,10 +43,12 @@ import {
   SaveOutlined
 } from '@ant-design/icons-vue'
 import { useReportStore } from '@/stores/report'
+import { useDesignerStore } from '@/stores/designer'
 import { exportTemplateFile, importTemplateFile } from '@/core/serializer/Serializer'
 
 const router = useRouter()
 const report = useReportStore()
+const designer = useDesignerStore()
 
 const saving = ref(false)
 const templateId = computed(() => report.currentTemplate?.id)
@@ -62,7 +64,19 @@ async function onSave() {
   }
   saving.value = true
   try {
-    await report.save()
+    const result = await report.saveWithConflictCheck()
+    if (!result.ok) {
+      designer.setSaveConflictWarnings(
+        result.warnings.map((w) => ({
+          message: w.message,
+          sourceCell: w.sourceCell,
+          targetCell: w.targetCell
+        }))
+      )
+      message.warning(`检测到 ${result.warnings.length} 个冲突风险，请先处理后再保存`, 4)
+      return
+    }
+    designer.clearSaveConflictWarnings()
     message.success('保存成功')
   } catch (e: any) {
     console.error('保存失败:', e)

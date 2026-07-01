@@ -3,6 +3,7 @@
  * 验证类型扩展、配置写入、序列化、特殊类型保护等
  */
 import 'fake-indexeddb/auto'
+import { it, expect } from 'vitest'
 import { Grid } from '../src/core/cell/Grid'
 import { createCell, type Cell } from '../src/core/cell/types'
 import { createEmptyTemplate, gridFromTemplate, gridToTemplate } from '../src/core/serializer/Serializer'
@@ -358,12 +359,9 @@ async function main() {
   testChartTypes()
 
   console.log(`\n=== 测试结果: ${passed} 通过, ${failed} 失败 ===`)
-  if (failed > 0) {
-    process.exit(1)
-  }
 }
 
-main().catch((e) => {
-  console.error(e)
-  process.exit(1)
+it('新增元素功能', async () => {
+  await main()
+  expect(failed, `存在 ${failed} 个失败断言`).toBe(0)
 })

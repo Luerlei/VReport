@@ -7,6 +7,7 @@ import type { ConditionFormat, ConditionRule } from '@/types'
 import { evaluator } from '@/core/expression/Evaluator'
 import { parseExpression } from '@/core/expression/Parser'
 import type { EvalContext } from '@/core/expression/types'
+import type { Cell } from '@/core/cell/types'
 
 export class ConditionEngine {
   private formats: ConditionFormat[]
@@ -22,10 +23,10 @@ export class ConditionEngine {
    * @param ctx 求值上下文（用于表达式规则）
    * @returns 合并后的样式覆盖（可能为空）
    */
-  resolve(cellName: string, value: unknown, ctx?: EvalContext): Partial<CellStyle> {
+  resolve(cellName: string, value: unknown, ctx?: EvalContext, sourceCell?: Cell): Partial<CellStyle> {
     let result: Partial<CellStyle> = {}
     for (const fmt of this.formats) {
-      if (!this.inScope(fmt.scope, cellName)) continue
+      if (!this.inScope(fmt.scope, cellName, sourceCell)) continue
       for (const rule of fmt.rules) {
         if (this.matchRule(rule, value, ctx)) {
           result = { ...result, ...rule.style }
@@ -36,8 +37,14 @@ export class ConditionEngine {
   }
 
   /** 判断单元格是否在条件格式作用范围内 */
-  private inScope(scope: string, cellName: string): boolean {
+  private inScope(scope: string, cellName: string, sourceCell?: Cell): boolean {
     if (!scope) return false
+    if (scope.startsWith('var:')) {
+      const expr = scope.slice(4)
+      const [dataset, fieldName] = expr.split('.')
+      if (!dataset || !fieldName) return false
+      return sourceCell?.dataset === dataset && sourceCell?.fieldName === fieldName
+    }
     // 支持 "A1:A10" 区域 或 "A1" 单个
     if (scope.includes(':')) {
       const [start, end] = scope.split(':')

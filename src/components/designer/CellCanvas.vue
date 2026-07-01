@@ -21,6 +21,7 @@
         :key="`col-${col}`"
         class="col-header"
         :class="{ selected: isColSelected(col) }"
+          :data-col="col"
         :style="{ width: colWidth(col) + 'px' }"
         @mousedown.prevent="onColHeaderMouseDown($event, col)"
       >
@@ -49,6 +50,7 @@
           :key="`row-${row}`"
           class="row-header"
           :class="{ selected: isRowSelected(row) }"
+          :data-row="row"
           :style="{ height: rowHeight(row) + 'px' }"
           @mousedown.prevent="onRowHeaderMouseDown($event, row)"
         >
@@ -90,10 +92,18 @@
             :key="`c-${row}-${col}`"
             class="cell"
             :class="cellClass(row, col)"
+            :data-row="row"
+            :data-col="col"
             :style="cellStyle(row, col)"
             @mousedown.stop="onCellMouseDown($event, row, col)"
             @dblclick="onCellDblClick(row, col)"
           >
+            <span
+              v-if="showExpandIndicator(row, col)"
+              class="expand-indicator"
+              :class="`dir-${expandDirectionOf(row, col)}`"
+              :title="expandIndicatorTitle(row, col)"
+            ></span>
             <template v-if="isEditing(row, col)">
               <textarea
                 ref="editorRefs"
@@ -102,8 +112,8 @@
                 :style="editorStyle(row, col)"
                 @blur="commitEdit"
                 @keydown.enter.exact.prevent="onEditorEnter"
-                @keydown.tab.exact.prevent="commitEditAndMove(1, 0)"
-                @keydown.esc.prevent="cancelEdit"
+                @keydown.tab.exact.prevent="onEditorTab"
+                @keydown.esc.prevent="onEditorEsc"
                 @keydown.up.prevent="onSuggestionNav(-1)"
                 @keydown.down.prevent="onSuggestionNav(1)"
                 @input="onEditorInput"
@@ -121,9 +131,21 @@
                   <span class="suggest-desc">{{ s.desc }}</span>
                 </div>
               </div>
-              <!-- 参数提示 + 示例 -->
+              <!-- 参数提示 + 当前参数高亮 + 示例 -->
               <div v-if="paramHint" class="param-hint">
-                <div class="hint-line">{{ paramHint.signature }} — {{ paramHint.desc }}</div>
+                <div class="hint-line">
+                  <span class="hint-fn">{{ paramHint.name }}</span>(<template
+                    v-for="(arg, i) in (paramHint.args ?? [])"
+                    :key="i"
+                  ><span
+                      :style="
+                        i === paramHint.activeArg
+                          ? 'font-weight:700;color:#0078D4;text-decoration:underline'
+                          : ''
+                      "
+                    >{{ arg }}</span><span v-if="i < (paramHint.args ?? []).length - 1">, </span></template
+                  >) <span class="hint-desc">— {{ paramHint.desc }}</span>
+                </div>
                 <div v-if="paramHint.example" class="hint-example">示例：{{ paramHint.example }}</div>
               </div>
               <!-- 公式错误提示 -->
@@ -175,6 +197,7 @@
     <!-- 右键菜单 -->
     <div
       v-if="contextMenu.show"
+      ref="contextMenuRef"
       class="context-menu"
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
     >
@@ -196,17 +219,35 @@
       </div>
       <div class="menu-divider"></div>
       <div class="menu-item" @click="doInsertRow">
-        <InsertRowAboveOutlined /> 向上插入行
+        <div class="menu-item-main"><InsertRowAboveOutlined /> 向上插入行</div>
+        <input
+          v-model.number="insertRowCount"
+          class="menu-count-input"
+          type="number"
+          min="1"
+          step="1"
+          @click.stop
+          @mousedown.stop
+        />
       </div>
       <div class="menu-item" @click="doInsertCol">
-        <InsertRowLeftOutlined /> 向左插入列
+        <div class="menu-item-main"><InsertRowLeftOutlined /> 向左插入列</div>
+        <input
+          v-model.number="insertColCount"
+          class="menu-count-input"
+          type="number"
+          min="1"
+          step="1"
+          @click.stop
+          @mousedown.stop
+        />
       </div>
       <div class="menu-divider"></div>
       <div class="menu-item danger" @click="doDeleteRow">
-        <DeleteRowOutlined /> 删除行
+        <div class="menu-item-main"><DeleteRowOutlined /> 删除行</div>
       </div>
       <div class="menu-item danger" @click="doDeleteCol">
-        <DeleteColumnOutlined /> 删除列
+        <div class="menu-item-main"><DeleteColumnOutlined /> 删除列</div>
       </div>
     </div>
   </div>
@@ -229,6 +270,8 @@ import { useReportStore } from '@/stores/report'
 import { useDesignerStore } from '@/stores/designer'
 import { useHistoryStore } from '@/stores/history'
 import { colIndexToName, createCell, type Cell, type CellStyle, type CellType } from '@/core/cell/types'
+import { toRangeRef, shouldIgnoreCanvasKeydownForIME, applyFieldBinding, getFormulaPickToken, clampMenuPosition } from './canvasEditHelpers'
+import { shiftCellRefName, shiftFormulaRefs, shiftRangeScope } from '@/core/cell/refShift'
 import QRPreview from './QRPreview.vue'
 import BarcodePreview from './BarcodePreview.vue'
 import ChartCell from '@/components/render/ChartCell.vue'
@@ -363,25 +406,49 @@ function inSelection(row: number, col: number): boolean {
 }
 
 function isColSelected(col: number): boolean {
+  if (!grid.value) return false
   const s = designer.selection
+  const fullRows = s.startCol === 0 && s.endCol === grid.value.colCount - 1
+  const fullCols = s.startRow === 0 && s.endRow === grid.value.rowCount - 1
+  if (fullRows && !fullCols) return false
   return col >= s.startCol && col <= s.endCol
 }
 function isRowSelected(row: number): boolean {
+  if (!grid.value) return false
   const s = designer.selection
+  const fullRows = s.startCol === 0 && s.endCol === grid.value.colCount - 1
+  const fullCols = s.startRow === 0 && s.endRow === grid.value.rowCount - 1
+  if (fullCols && !fullRows) return false
   return row >= s.startRow && row <= s.endRow
+}
+
+function isWholeRowOrColSelection(): boolean {
+  if (!grid.value) return false
+  const s = designer.selection
+  const fullRows = s.startCol === 0 && s.endCol === grid.value.colCount - 1
+  const fullCols = s.startRow === 0 && s.endRow === grid.value.rowCount - 1
+  return !designer.isSingle && (fullRows || fullCols)
 }
 
 function cellClass(row: number, col: number) {
   const cell = realCell(row, col)
   const isMain = cell && cell.row === row && cell.col === col
+  const inSel = inSelection(row, col)
+  const whole = isWholeRowOrColSelection()
+  const hasSaveConflict = !!(cell && designer.saveConflictCellKeys.has(cell.name))
   return {
-    selected: inSelection(row, col),
+    // 单元格/区域选中：保持描边高亮（现状不变）
+    selected: inSel && !whole,
+    // 整行/整列选中：用底色突出，不描边
+    'band-selected': inSel && whole,
     merged: cell && (cell.rowSpan > 1 || cell.colSpan > 1) && isMain,
     covered: cell && !(cell.row === row && cell.col === col),
     'cell-image': isMain && cell?.cellType === 'image',
     'cell-qrcode': isMain && cell?.cellType === 'qrcode',
     'cell-barcode': isMain && cell?.cellType === 'barcode',
-    'cell-chart': isMain && cell?.cellType === 'chart'
+    'cell-chart': isMain && cell?.cellType === 'chart',
+    'has-expand-indicator': showExpandIndicator(row, col),
+    'save-conflict': hasSaveConflict
   }
 }
 
@@ -424,6 +491,7 @@ function cellStyle(row: number, col: number): Record<string, string> {
 
 function styleToCss(s: CellStyle): Record<string, string> {
   const css: Record<string, string> = {}
+  const vAlign = s.vAlign ?? 'middle'
   if (s.fontFamily) css['font-family'] = s.fontFamily
   if (s.fontSize) css['font-size'] = s.fontSize + 'px'
   if (s.bold) css['font-weight'] = 'bold'
@@ -432,12 +500,15 @@ function styleToCss(s: CellStyle): Record<string, string> {
   if (s.color) css['color'] = s.color
   if (s.background) css['background-color'] = s.background
   if (s.hAlign) css['text-align'] = s.hAlign
-  // 垂直对齐:用 flex 布局实现(vertical-align 在 block 元素中无效)
-  if (s.vAlign) {
-    css['display'] = 'flex'
-    if (s.vAlign === 'top') css['align-items'] = 'flex-start'
-    else if (s.vAlign === 'middle') css['align-items'] = 'center'
-    else if (s.vAlign === 'bottom') css['align-items'] = 'flex-end'
+  // 垂直对齐:设计器中统一使用 flex，默认垂直居中。
+  css['display'] = 'flex'
+  if (vAlign === 'top') css['align-items'] = 'flex-start'
+  else if (vAlign === 'middle') css['align-items'] = 'center'
+  else if (vAlign === 'bottom') css['align-items'] = 'flex-end'
+  if (s.hAlign) {
+    if (s.hAlign === 'left') css['justify-content'] = 'flex-start'
+    else if (s.hAlign === 'center') css['justify-content'] = 'center'
+    else if (s.hAlign === 'right') css['justify-content'] = 'flex-end'
   }
   if (s.wrap) css['white-space'] = 'normal'
   else css['white-space'] = 'nowrap'
@@ -460,6 +531,28 @@ function displayText(row: number, col: number): string {
   const cell = realCell(row, col)
   if (!cell) return ''
   return cell.content
+}
+
+function expandDirectionOf(row: number, col: number): 'down' | 'right' | null {
+  const cell = realCell(row, col)
+  if (!cell) return null
+  if (cell.row !== row || cell.col !== col) return null
+  if (!cell.dataset || !cell.fieldName) return null
+  if (cell.expandDirection !== 'down' && cell.expandDirection !== 'right') return null
+  return cell.expandDirection
+}
+
+function showExpandIndicator(row: number, col: number): boolean {
+  return expandDirectionOf(row, col) !== null
+}
+
+function expandIndicatorTitle(row: number, col: number): string {
+  const cell = realCell(row, col)
+  const dir = expandDirectionOf(row, col)
+  if (!cell || !dir) return ''
+  return dir === 'down'
+    ? `数据集变量(${cell.dataset}.${cell.fieldName}) - 向下展开`
+    : `数据集变量(${cell.dataset}.${cell.fieldName}) - 向右展开`
 }
 
 // ===== 特殊单元格(图片/二维码/条码/图表)渲染辅助 =====
@@ -528,59 +621,12 @@ import {
   validateFormula,
   type FormulaSuggestion
 } from '@/core/expression/Autocomplete'
-import { parseCellRef } from '@/core/expression/Lexer'
+import { extractFormulaRefs, type FormulaRef } from '@/core/expression/FormulaRefs'
 
 const formulaSuggestions = ref<FormulaSuggestion[]>([])
 const suggestIndex = ref(0)
 const paramHint = ref<FormulaSuggestion | null>(null)
 const formulaError = ref<string | null>(null)
-
-/** Excel 风格引用高亮颜色调色板 */
-const REF_COLORS = ['#0078D4', '#00B050', '#FFC000', '#7030A0', '#E97132', '#2E75B6', '#548235', '#C00000']
-
-/** 公式引用高亮信息：每个引用对应一个颜色与单元格区域 */
-interface FormulaRef {
-  color: string
-  cells: { row: number; col: number }[]
-  isRange: boolean
-}
-
-/** 解析公式中所有单元格引用(含区域 A1:B3) */
-function extractFormulaRefs(formula: string): FormulaRef[] {
-  if (!formula || !formula.startsWith('=')) return []
-  const expr = formula.substring(1)
-  const refs: FormulaRef[] = []
-  // 先匹配区域 A1:B3
-  const rangeRe = /\$?[A-Za-z]+\$?[0-9]+\s*:\s*\$?[A-Za-z]+\$?[0-9]+/g
-  const singleRe = /\$?[A-Za-z]+\$?[0-9]+/g
-  let consumed: { start: number; end: number }[] = []
-  let m: RegExpExecArray | null
-  while ((m = rangeRe.exec(expr)) !== null) {
-    const parts = m[0].split(':')
-    try {
-      const a = parseCellRef(parts[0].trim())
-      const b = parseCellRef(parts[1].trim())
-      const cells: { row: number; col: number }[] = []
-      const minR = Math.min(a.row, b.row), maxR = Math.max(a.row, b.row)
-      const minC = Math.min(a.col, b.col), maxC = Math.max(a.col, b.col)
-      for (let r = minR; r <= maxR; r++) for (let c = minC; c <= maxC; c++) cells.push({ row: r, col: c })
-      refs.push({ color: '', cells, isRange: true })
-      consumed.push({ start: m.index, end: m.index + m[0].length })
-    } catch { /* 忽略非法引用 */ }
-  }
-  // 再匹配单个单元格(排除已被区域覆盖的部分)
-  while ((m = singleRe.exec(expr)) !== null) {
-    const inRange = consumed.some((c) => m!.index >= c.start && m!.index + m![0].length <= c.end)
-    if (inRange) continue
-    try {
-      const a = parseCellRef(m[0])
-      refs.push({ color: '', cells: [{ row: a.row, col: a.col }], isRange: false })
-    } catch { /* 忽略非法引用 */ }
-  }
-  // 分配颜色
-  refs.forEach((r, i) => { r.color = REF_COLORS[i % REF_COLORS.length] })
-  return refs
-}
 
 /** 当前需要高亮的公式引用(编辑时取 editValue,选中公式单元格时取其内容) */
 const formulaRefs = computed<FormulaRef[]>(() => {
@@ -682,6 +728,24 @@ function onEditorEnter() {
   commitEditAndMove(0, 1)
 }
 
+/** Tab 键处理（Excel 风格）：有联想时补全函数，否则提交并右移 */
+function onEditorTab() {
+  if (formulaSuggestions.value.length) {
+    applySuggestion(formulaSuggestions.value[suggestIndex.value])
+    return
+  }
+  commitEditAndMove(1, 0)
+}
+
+/** Esc 键处理（Excel 风格）：有联想时先关闭联想，否则取消编辑 */
+function onEditorEsc() {
+  if (formulaSuggestions.value.length) {
+    formulaSuggestions.value = []
+    return
+  }
+  cancelEdit()
+}
+
 function isEditing(row: number, col: number): boolean {
   return designer.editingCell?.row === row && designer.editingCell?.col === col
 }
@@ -731,6 +795,27 @@ watch(
   (req) => {
     if (!req || !grid.value) return
     const expr = `\${${req.dsName}.${req.fieldName}}`
+    const targetPos = designer.editingCell ?? {
+      row: designer.selection.startRow,
+      col: designer.selection.startCol
+    }
+    const targetCell = grid.value.getRealCell(targetPos.row, targetPos.col)
+    if (!targetCell) {
+      designer.clearFieldInsertRequest()
+      return
+    }
+    const targetType = targetCell.cellType ?? 'text'
+    if (targetType === 'image' || targetType === 'qrcode' || targetType === 'barcode' || targetType === 'chart') {
+      designer.clearFieldInsertRequest()
+      return
+    }
+
+    const bindingChanged = applyFieldBinding(targetCell, req.dsName, req.fieldName)
+    if (bindingChanged) {
+      history.pushHistory()
+      report.markDirty()
+    }
+
     if (designer.editingCell) {
       // 编辑模式:在光标位置插入,保持编辑状态
       const editor = editorRefs.value[0] as HTMLTextAreaElement | undefined
@@ -747,18 +832,12 @@ watch(
       })
     } else {
       // 非编辑模式:追加到当前选中单元格内容
-      const row = designer.selection.startRow
-      const col = designer.selection.startCol
-      const cell = grid.value.getRealCell(row, col)
-      if (!cell) return
-      const t = cell.cellType ?? 'text'
-      if (t === 'image' || t === 'qrcode' || t === 'barcode' || t === 'chart') return
       history.pushHistory()
-      const existing = cell.content || ''
-      grid.value.setCellContent(row, col, existing ? existing + expr : expr)
+      const existing = targetCell.content || ''
+      grid.value.setCellContent(targetPos.row, targetPos.col, existing ? existing + expr : expr)
       report.markDirty()
     }
-    designer.fieldInsertRequest = null
+    designer.clearFieldInsertRequest()
   }
 )
 
@@ -810,21 +889,59 @@ function cancelEdit() {
 let isDragging = false
 let dragStartRow = 0
 let dragStartCol = 0
+let dragMode: 'cells' | 'rows' | 'cols' | null = null
+let selectionAnchor: { row: number; col: number } | null = null
+let formulaRangeDragging = false
+let formulaRangeInsert: { start: number; end: number; anchorRow: number; anchorCol: number } | null = null
+
+/** 更新公式中当前拖拽区域引用文本 */
+function updateFormulaRangeInsert(row: number, col: number) {
+  if (!formulaRangeInsert) return
+  const rangeRef = toRangeRef(formulaRangeInsert.anchorRow, formulaRangeInsert.anchorCol, row, col)
+  const before = editValue.value.substring(0, formulaRangeInsert.start)
+  const after = editValue.value.substring(formulaRangeInsert.end)
+  editValue.value = before + rangeRef + after
+  formulaRangeInsert.end = formulaRangeInsert.start + rangeRef.length
+  nextTick(() => {
+    const editor = editorRefs.value[0]
+    if (editor) {
+      editor.selectionStart = editor.selectionEnd = formulaRangeInsert?.end ?? editor.value.length
+      editor.focus()
+    }
+    updateSuggestions()
+  })
+}
 
 function onCellMouseDown(e: MouseEvent, row: number, col: number) {
+  if (e.button !== 0) return
   // 公式拾取模式:点击单元格插入引用到编辑器光标位置,保持编辑状态
   if (designer.formulaPicking && designer.editingCell) {
+    // 点击当前正在编辑的单元格时，不应再次插入坐标；应允许继续编辑/定位光标。
+    if (designer.editingCell.row === row && designer.editingCell.col === col) {
+      return
+    }
     e.preventDefault() // 阻止 textarea 失焦
-    const ref = colIndexToName(col) + (row + 1)
     const editor = editorRefs.value[0] as HTMLTextAreaElement | undefined
+    if (!editor) return
     const pos = editor?.selectionStart ?? editValue.value.length
-    editValue.value = editValue.value.substring(0, pos) + ref + editValue.value.substring(pos)
+    const pickedCell = grid.value?.getRealCell(row, col) ?? null
+    const initialRef = getFormulaPickToken(pickedCell, row, col)
+    editValue.value = editValue.value.substring(0, pos) + initialRef + editValue.value.substring(pos)
+    // 仅普通单元格引用启用拖拽扩展区域；数据集字段变量为动态引用，不扩展成 A1:B2。
+    const enableRangeDrag = !initialRef.startsWith('${')
+    formulaRangeDragging = enableRangeDrag
+    formulaRangeInsert = enableRangeDrag
+      ? {
+          start: pos,
+          end: pos + initialRef.length,
+          anchorRow: row,
+          anchorCol: col
+        }
+      : null
     nextTick(() => {
-      if (editor) {
-        const newPos = pos + ref.length
-        editor.selectionStart = editor.selectionEnd = newPos
-        editor.focus()
-      }
+      const newPos = pos + initialRef.length
+      editor.selectionStart = editor.selectionEnd = newPos
+      editor.focus()
       updateSuggestions()
     })
     return
@@ -841,13 +958,17 @@ function onCellMouseDown(e: MouseEvent, row: number, col: number) {
     return
   }
   if (e.shiftKey) {
-    // Shift+点击：扩展选区
+    // Shift+点击：从锚点扩展选区；若无锚点则退回到当前选区左上角。
+    const anchor = selectionAnchor ?? { row: designer.selection.startRow, col: designer.selection.startCol }
+    designer.setSelection(anchor.row, anchor.col)
     designer.extendSelection(row, col)
     return
   }
   // 普通点击：开始新选区
   designer.setSelection(row, col)
+  selectionAnchor = { row, col }
   isDragging = true
+  dragMode = 'cells'
   dragStartRow = row
   dragStartCol = col
 }
@@ -858,23 +979,67 @@ function onCellsAreaMouseDown(e: MouseEvent) {
 }
 
 function onRowHeaderMouseDown(e: MouseEvent, row: number) {
+  if (e.button !== 0) return
   if (designer.editingCell) commitEdit()
   if (!grid.value) return
+  if (e.shiftKey) {
+    const anchorRow = selectionAnchor?.row ?? designer.selection.startRow
+    designer.setSelection(anchorRow, 0)
+    designer.extendSelection(row, grid.value.colCount - 1)
+    return
+  }
   designer.setSelection(row, 0)
   designer.extendSelection(row, grid.value.colCount - 1)
+  selectionAnchor = { row, col: 0 }
   isDragging = true
+  dragMode = 'rows'
   dragStartRow = row
   dragStartCol = 0
 }
 
 function onColHeaderMouseDown(e: MouseEvent, col: number) {
+  if (e.button !== 0) return
   if (designer.editingCell) commitEdit()
   if (!grid.value) return
+  if (e.shiftKey) {
+    const anchorCol = selectionAnchor?.col ?? designer.selection.startCol
+    designer.setSelection(0, anchorCol)
+    designer.extendSelection(grid.value.rowCount - 1, col)
+    return
+  }
   designer.setSelection(0, col)
   designer.extendSelection(grid.value.rowCount - 1, col)
+  selectionAnchor = { row: 0, col }
   isDragging = true
+  dragMode = 'cols'
   dragStartRow = 0
   dragStartCol = col
+}
+
+function getRowFromClientY(y: number): number | null {
+  if (!grid.value || !cellsAreaRef.value) return null
+  const rect = cellsAreaRef.value.getBoundingClientRect()
+  // rect 已反映滚动位置（.cells-area 随 .cell-canvas 滚动），不可再加 scrollTop，否则双重计数。
+  const relY = y - rect.top
+  let accH = 0
+  for (let i = 0; i < grid.value.rowCount; i++) {
+    accH += grid.value.rows[i].height
+    if (relY < accH) return i
+  }
+  return grid.value.rowCount - 1
+}
+
+function getColFromClientX(x: number): number | null {
+  if (!grid.value || !cellsAreaRef.value) return null
+  const rect = cellsAreaRef.value.getBoundingClientRect()
+  // 同上：rect.left 已含横向滚动位移，不再加 scrollLeft。
+  const relX = x - rect.left
+  let accW = 0
+  for (let i = 0; i < grid.value.colCount; i++) {
+    accW += grid.value.columns[i].width
+    if (relX < accW) return i
+  }
+  return grid.value.colCount - 1
 }
 
 // ===== 行高/列宽拖拽调整 =====
@@ -937,8 +1102,9 @@ function onRowResizeEnd() {
 function getCellFromPoint(x: number, y: number): { row: number; col: number } | null {
   if (!grid.value || !cellsAreaRef.value) return null
   const rect = cellsAreaRef.value.getBoundingClientRect()
-  const relY = y - rect.top + scrollTop.value
-  const relX = x - rect.left + scrollLeft.value
+  // rect 已反映滚动偏移，直接用 clientX/Y 减 rect 即可；再加 scroll 会双重计数导致框选超选。
+  const relY = y - rect.top
+  const relX = x - rect.left
   // 计算行
   let accH = 0
   let row = -1
@@ -965,7 +1131,27 @@ function getCellFromPoint(x: number, y: number): { row: number; col: number } | 
 }
 
 function onMouseMove(e: MouseEvent) {
+  if (formulaRangeDragging) {
+    const pos = getCellFromPoint(e.clientX, e.clientY)
+    if (!pos) return
+    updateFormulaRangeInsert(pos.row, pos.col)
+    return
+  }
   if (!isDragging || !grid.value) return
+  if (dragMode === 'rows') {
+    const row = getRowFromClientY(e.clientY)
+    if (row == null) return
+    designer.setSelection(dragStartRow, 0)
+    designer.extendSelection(row, grid.value.colCount - 1)
+    return
+  }
+  if (dragMode === 'cols') {
+    const col = getColFromClientX(e.clientX)
+    if (col == null) return
+    designer.setSelection(0, dragStartCol)
+    designer.extendSelection(grid.value.rowCount - 1, col)
+    return
+  }
   const pos = getCellFromPoint(e.clientX, e.clientY)
   if (!pos) return
   designer.setSelection(dragStartRow, dragStartCol)
@@ -974,6 +1160,9 @@ function onMouseMove(e: MouseEvent) {
 
 function onMouseUp() {
   isDragging = false
+  dragMode = null
+  formulaRangeDragging = false
+  formulaRangeInsert = null
 }
 
 onMounted(() => {
@@ -1010,6 +1199,43 @@ function updateViewport() {
   }
 }
 
+function pixelTopForRow(row: number): number {
+  if (!grid.value) return 0
+  let top = 0
+  for (let i = 0; i < row; i++) top += grid.value.rows[i].height
+  return top
+}
+
+function pixelLeftForCol(col: number): number {
+  if (!grid.value) return 0
+  let left = 0
+  for (let i = 0; i < col; i++) left += grid.value.columns[i].width
+  return left
+}
+
+/** 聚焦并滚动到指定单元格（供预览页冲突定位回设计器） */
+function focusCell(row: number, col: number) {
+  if (!grid.value || !canvasRootRef.value) return
+  const safeRow = Math.max(0, Math.min(grid.value.rowCount - 1, row))
+  const safeCol = Math.max(0, Math.min(grid.value.colCount - 1, col))
+  designer.setSelection(safeRow, safeCol)
+
+  const top = pixelTopForRow(safeRow)
+  const left = pixelLeftForCol(safeCol)
+  const bottom = top + rowHeight(safeRow)
+  const right = left + colWidth(safeCol)
+  const root = canvasRootRef.value
+
+  if (top < root.scrollTop) root.scrollTop = top
+  else if (bottom > root.scrollTop + root.clientHeight) root.scrollTop = Math.max(0, bottom - root.clientHeight)
+
+  if (left < root.scrollLeft) root.scrollLeft = left
+  else if (right > root.scrollLeft + root.clientWidth) root.scrollLeft = Math.max(0, right - root.clientWidth)
+
+  scrollTop.value = root.scrollTop
+  scrollLeft.value = root.scrollLeft
+}
+
 // ===== 键盘交互（Excel 风格） =====
 function onCanvasKeydown(e: KeyboardEvent) {
   // 编辑中不处理
@@ -1019,6 +1245,11 @@ function onCanvasKeydown(e: KeyboardEvent) {
   const ctrl = e.ctrlKey || e.metaKey
   const s = designer.selection
   const key = e.key
+
+  // 输入法组合输入过程中不拦截按键，避免中文首字母被当作普通字符写入。
+  if (shouldIgnoreCanvasKeydownForIME(e)) {
+    return
+  }
 
   // Ctrl+B/I/U 样式快捷键
   if (ctrl && key.toLowerCase() === 'b') {
@@ -1162,9 +1393,70 @@ function toggleStyleProp(prop: 'bold' | 'italic' | 'underline') {
 
 // ===== 右键菜单 =====
 const contextMenu = ref({ show: false, x: 0, y: 0 })
+const contextMenuRef = ref<HTMLElement | null>(null)
+const insertRowCount = ref(1)
+const insertColCount = ref(1)
+
+/** 将右键菜单夹取到视口内，避免在报表/窗口边缘时被裁切显示不全 */
+function clampContextMenuIntoViewport(preferX: number, preferY: number) {
+  const el = contextMenuRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const { x, y } = clampMenuPosition(
+    preferX,
+    preferY,
+    rect.width,
+    rect.height,
+    window.innerWidth,
+    window.innerHeight
+  )
+  contextMenu.value.x = x
+  contextMenu.value.y = y
+}
 
 function onContextMenu(e: MouseEvent) {
+  if (designer.editingCell) commitEdit()
+  if (grid.value) {
+    const target = e.target as HTMLElement | null
+    const rowHeaderEl = target?.closest('.row-header') as HTMLElement | null
+    const colHeaderEl = target?.closest('.col-header') as HTMLElement | null
+    const cellEl = target?.closest('.cell') as HTMLElement | null
+    const s = designer.selection
+    const startRow = Math.min(s.startRow, s.endRow)
+    const endRow = Math.max(s.startRow, s.endRow)
+    const startCol = Math.min(s.startCol, s.endCol)
+    const endCol = Math.max(s.startCol, s.endCol)
+
+    if (rowHeaderEl) {
+      const row = Number(rowHeaderEl.dataset.row)
+      const rowSelectionCoversAllCols = startCol === 0 && endCol === grid.value.colCount - 1
+      const hitCurrentRowSelection = rowSelectionCoversAllCols && row >= startRow && row <= endRow
+      if (!hitCurrentRowSelection) {
+        designer.setSelection(row, 0)
+        designer.extendSelection(row, grid.value.colCount - 1)
+      }
+    } else if (colHeaderEl) {
+      const col = Number(colHeaderEl.dataset.col)
+      const colSelectionCoversAllRows = startRow === 0 && endRow === grid.value.rowCount - 1
+      const hitCurrentColSelection = colSelectionCoversAllRows && col >= startCol && col <= endCol
+      if (!hitCurrentColSelection) {
+        designer.setSelection(0, col)
+        designer.extendSelection(grid.value.rowCount - 1, col)
+      }
+    } else if (cellEl) {
+      const row = Number(cellEl.dataset.row)
+      const col = Number(cellEl.dataset.col)
+      const hitCurrentCellSelection = row >= startRow && row <= endRow && col >= startCol && col <= endCol
+      if (!hitCurrentCellSelection) {
+        designer.setSelection(row, col)
+      }
+    }
+  }
+  insertRowCount.value = 1
+  insertColCount.value = 1
   contextMenu.value = { show: true, x: e.clientX, y: e.clientY }
+  // 菜单渲染后按实际尺寸夹取进视口，避免边缘处被裁切
+  nextTick(() => clampContextMenuIntoViewport(e.clientX, e.clientY))
 }
 
 function closeContextMenu() {
@@ -1173,31 +1465,77 @@ function closeContextMenu() {
 
 function doInsertRow() {
   if (!grid.value) return
+  const count = normalizeInsertCount(insertRowCount.value)
   history.pushHistory()
-  grid.value.insertRow(designer.selection.startRow)
+  grid.value.insertRow(designer.selection.startRow, count)
+  shiftConditionFormatScopes({ rowInsertIndex: designer.selection.startRow, rowInsertCount: count })
   report.markDirty()
   closeContextMenu()
 }
 function doInsertCol() {
   if (!grid.value) return
+  const count = normalizeInsertCount(insertColCount.value)
   history.pushHistory()
-  grid.value.insertCol(designer.selection.startCol)
+  grid.value.insertCol(designer.selection.startCol, count)
+  shiftConditionFormatScopes({ colInsertIndex: designer.selection.startCol, colInsertCount: count })
   report.markDirty()
   closeContextMenu()
 }
 function doDeleteRow() {
   if (!grid.value) return
+  const s = designer.selection
+  const start = Math.min(s.startRow, s.endRow)
+  const end = Math.max(s.startRow, s.endRow)
+  const count = end - start + 1
+  if (count <= 0) return
+  if (count >= grid.value.rowCount) {
+    _message.warning('至少保留 1 行')
+    closeContextMenu()
+    return
+  }
   history.pushHistory()
-  grid.value.deleteRow(designer.selection.startRow)
+  grid.value.deleteRow(start, count)
+  shiftConditionFormatScopes({ rowDeleteIndex: start, rowDeleteCount: count })
+  const nextRow = Math.min(start, grid.value.rowCount - 1)
+  designer.setSelection(nextRow, Math.min(s.startCol, grid.value.colCount - 1))
   report.markDirty()
   closeContextMenu()
 }
 function doDeleteCol() {
   if (!grid.value) return
+  const s = designer.selection
+  const start = Math.min(s.startCol, s.endCol)
+  const end = Math.max(s.startCol, s.endCol)
+  const count = end - start + 1
+  if (count <= 0) return
+  if (count >= grid.value.colCount) {
+    _message.warning('至少保留 1 列')
+    closeContextMenu()
+    return
+  }
   history.pushHistory()
-  grid.value.deleteCol(designer.selection.startCol)
+  grid.value.deleteCol(start, count)
+  shiftConditionFormatScopes({ colDeleteIndex: start, colDeleteCount: count })
+  const nextCol = Math.min(start, grid.value.colCount - 1)
+  designer.setSelection(Math.min(s.startRow, grid.value.rowCount - 1), nextCol)
   report.markDirty()
   closeContextMenu()
+}
+
+function shiftConditionFormatScopes(options: Parameters<typeof shiftRangeScope>[1]) {
+  const formats = report.currentTemplate?.conditionFormats
+  if (!formats?.length) return
+  for (const fmt of formats) {
+    fmt.scope = shiftRangeScope(fmt.scope, options)
+  }
+}
+
+function normalizeInsertCount(raw: number): number {
+  if (!Number.isFinite(raw)) return 1
+  const rounded = Math.floor(raw)
+  if (rounded < 1) return 1
+  if (rounded > 200) return 200
+  return rounded
 }
 
 // ===== 复制/剪切/粘贴/删除单元格内容 =====
@@ -1275,12 +1613,30 @@ function doPaste() {
   /** 平移单元格名：A2 + 偏移 -> 新名 */
   const shiftName = (name?: string): string | undefined => {
     if (!name) return undefined
-    const p = parseCellName(name)
-    if (!p) return undefined
-    const nr = p.row + rowOffset
-    const nc = p.col + colOffset
-    if (nr < 0 || nc < 0) return undefined
-    return colIndexToName(nc) + (nr + 1)
+    return shiftCellRefName(name, {
+      rowInsertIndex: rowOffset >= 0 ? 0 : undefined,
+      rowInsertCount: rowOffset >= 0 ? rowOffset : undefined,
+      colInsertIndex: colOffset >= 0 ? 0 : undefined,
+      colInsertCount: colOffset >= 0 ? colOffset : undefined,
+      rowDeleteIndex: rowOffset < 0 ? 0 : undefined,
+      rowDeleteCount: rowOffset < 0 ? -rowOffset : undefined,
+      colDeleteIndex: colOffset < 0 ? 0 : undefined,
+      colDeleteCount: colOffset < 0 ? -colOffset : undefined
+    }) ?? undefined
+  }
+
+  const shiftFormulaByOffset = (content: string): string => {
+    const options = {
+      rowInsertIndex: rowOffset >= 0 ? 0 : undefined,
+      rowInsertCount: rowOffset >= 0 ? rowOffset : undefined,
+      colInsertIndex: colOffset >= 0 ? 0 : undefined,
+      colInsertCount: colOffset >= 0 ? colOffset : undefined,
+      rowDeleteIndex: rowOffset < 0 ? 0 : undefined,
+      rowDeleteCount: rowOffset < 0 ? -rowOffset : undefined,
+      colDeleteIndex: colOffset < 0 ? 0 : undefined,
+      colDeleteCount: colOffset < 0 ? -colOffset : undefined
+    }
+    return shiftFormulaRefs(content, options)
   }
   history.pushHistory()
   for (let r = 0; r < cells.length; r++) {
@@ -1293,7 +1649,7 @@ function doPaste() {
       if (!target) continue
       // 写入内容与样式(深拷贝避免引用污染)
       const cloned = cloneCellForClipboard(src)
-      target.content = cloned.content
+      target.content = cloned.content.startsWith('=') ? shiftFormulaByOffset(cloned.content) : cloned.content
       target.cellType = cloned.cellType
       target.style = cloned.style
       target.expandDirection = cloned.expandDirection
@@ -1341,6 +1697,7 @@ function doSelectAll() {
 
 // 暴露给父组件的方法
 defineExpose({
+  focusCell,
   mergeSelection: () => {
     if (!grid.value) return
     const s = designer.selection
@@ -1507,16 +1864,31 @@ defineExpose({
   z-index: 1;
 }
 
+/* 整行/整列选中：用底色突出（不描边）。inset box-shadow 覆盖在背景之上、内容之下，
+   保证单元格文字仍清晰可见。 */
+.cell.band-selected {
+  box-shadow: inset 0 0 0 9999px rgba(22, 119, 255, 0.16);
+}
+
+.cell.save-conflict {
+  box-shadow: inset 0 0 0 2px #ff4d4f;
+}
+
 .cell.merged {
   z-index: 1;
 }
 
 .cell-text {
-  display: block;
-  width: 100%;
-  height: 100%;
+  display: inline-block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: inherit;
+}
+
+.cell.has-expand-indicator .cell-text {
+  padding-left: 12px;
+  max-width: calc(100% - 12px);
 }
 
 .cell-image-el {
@@ -1544,6 +1916,39 @@ defineExpose({
   font-size: inherit;
   background: #fff;
   z-index: 5;
+}
+
+.expand-indicator {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  z-index: 2;
+  pointer-events: none;
+  width: 8px;
+}
+
+.expand-indicator.dir-down {
+  color: #1677ff;
+}
+
+.expand-indicator.dir-down::before {
+  content: '↓';
+}
+
+.expand-indicator.dir-right {
+  color: #389e0d;
+}
+
+.expand-indicator.dir-right::before {
+  content: '→';
 }
 
 .formula-suggest {
@@ -1637,6 +2042,8 @@ defineExpose({
   z-index: 100;
   min-width: 180px;
   padding: 4px 0;
+  max-height: calc(100vh - 12px);
+  overflow-y: auto;
 }
 
 .menu-item {
@@ -1644,6 +2051,13 @@ defineExpose({
   cursor: pointer;
   font-size: 13px;
   display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.menu-item-main {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
 }
@@ -1657,6 +2071,15 @@ defineExpose({
 .menu-item :deep(.anticon) {
   font-size: 13px;
   color: #595959;
+}
+
+.menu-count-input {
+  width: 54px;
+  height: 22px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: 12px;
 }
 
 .menu-item.danger {

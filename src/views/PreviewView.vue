@@ -19,6 +19,9 @@
           </template>
         </a-dropdown>
         <a-divider type="vertical" />
+        <span>显示行列号</span>
+        <a-switch v-model:checked="showRowColHeaders" size="small" />
+        <a-divider type="vertical" />
         <span>缩放</span>
         <a-slider v-model:value="zoom" :min="50" :max="200" :step="10" style="width: 120px" />
         <span>{{ zoom }}%</span>
@@ -39,6 +42,7 @@
             :row-heights="renderResult.rowHeights"
             :col-widths="renderResult.colWidths"
             :zoom="zoom"
+            :show-row-col-headers="showRowColHeaders"
             :condition-formats="conditionFormats"
           />
         </div>
@@ -68,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
@@ -90,6 +94,7 @@ const loading = ref(false)
 const exporting = ref(false)
 const renderResult = ref<ExpandResult | null>(null)
 const paramValues = ref<Record<string, unknown>>({})
+const showRowColHeaders = ref(true)
 
 const template = computed(() => report.currentTemplate)
 const params = computed(() => template.value?.parameters ?? [])
@@ -97,6 +102,8 @@ const hasParams = computed(() => params.value.length > 0)
 const conditionFormats = computed(() => template.value?.conditionFormats ?? [])
 
 onMounted(async () => {
+  const saved = localStorage.getItem('vreport.preview.showRowColHeaders')
+  if (saved != null) showRowColHeaders.value = saved === '1'
   const id = route.params.id as string
   if (id) {
     await report.open(id)
@@ -104,6 +111,10 @@ onMounted(async () => {
     paramValues.value = ParameterEngine.getDefaultValues(params.value)
     await render()
   }
+})
+
+watch(showRowColHeaders, (v) => {
+  localStorage.setItem('vreport.preview.showRowColHeaders', v ? '1' : '0')
 })
 
 async function onQuery(values: Record<string, unknown>) {

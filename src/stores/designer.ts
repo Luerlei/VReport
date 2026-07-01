@@ -5,6 +5,12 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Cell } from '@/core/cell/types'
 
+export interface DesignerConflictWarning {
+  message: string
+  sourceCell?: string
+  targetCell?: string
+}
+
 /** 选区范围 */
 export interface Selection {
   startRow: number
@@ -34,14 +40,40 @@ export const useDesignerStore = defineStore('designer', () => {
     fieldInsertRequest.value = { dsName, fieldName }
   }
 
+  /** 清除字段插入请求(由画布消费后调用) */
+  function clearFieldInsertRequest() {
+    fieldInsertRequest.value = null
+  }
+
   /** 公式编辑模式:点击单元格插入单元格引用作为公式参数 */
   const formulaPicking = ref(false)
   /** 公式编辑启动信号(由工具栏触发,画布监听后进入公式编辑) */
   const startFormulaEditSignal = ref(0)
+  /** 保存前展开校验冲突告警（用于设计器页展示和高亮） */
+  const saveConflictWarnings = ref<DesignerConflictWarning[]>([])
+  /** 冲突单元格 key 集合(row,col) */
+  const saveConflictCellKeys = computed(() => {
+    const keys = new Set<string>()
+    for (const w of saveConflictWarnings.value) {
+      if (w.sourceCell) keys.add(w.sourceCell)
+      if (w.targetCell) keys.add(w.targetCell)
+    }
+    return keys
+  })
 
   /** 请求进入公式编辑模式 */
   function requestStartFormulaEdit() {
     startFormulaEditSignal.value++
+  }
+
+  /** 更新保存冲突告警 */
+  function setSaveConflictWarnings(warnings: DesignerConflictWarning[]) {
+    saveConflictWarnings.value = warnings
+  }
+
+  /** 清理保存冲突告警 */
+  function clearSaveConflictWarnings() {
+    saveConflictWarnings.value = []
   }
 
   /** 是否选中单个单元格 */
@@ -107,9 +139,14 @@ export const useDesignerStore = defineStore('designer', () => {
     pickedMasterCell,
     fieldInsertRequest,
     requestFieldInsert,
+    clearFieldInsertRequest,
     formulaPicking,
     startFormulaEditSignal,
+    saveConflictWarnings,
+    saveConflictCellKeys,
     requestStartFormulaEdit,
+    setSaveConflictWarnings,
+    clearSaveConflictWarnings,
     isSingle,
     rowCount,
     colCount,

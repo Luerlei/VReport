@@ -1,48 +1,94 @@
 /**
  * Excel 数据源 Provider
- * 使用 SheetJS (xlsx) 解析 .xlsx 文件
- * 文件内容以 base64 存储在数据源 config.fileName 中（P0 仅存名，P1 改为存内容）
+ * 使用 ExcelJS 解析 .xlsx 文件（与导出共用同一库，移除含 CVE 的 xlsx 依赖）
+ * 文件内容以 base64 存于数据源 config.fileData
  */
-import * as XLSX from 'xlsx'
+import ExcelJS from 'exceljs'
 import type { DataProvider, DataRow } from './types'
 import type { DataSource, DataSet } from '@/types'
+
+/** 单文件解析上限，防止超大文件导致浏览器内存溢出 */
+const MAX_EXCEL_MB = 20
+const MAX_EXCEL_BYTES = MAX_EXCEL_MB * 1024 * 1024
 
 export class ExcelProvider implements DataProvider {
   readonly type = 'excel'
 
   async fetch(source: DataSource, dataSet: DataSet): Promise<DataRow[]> {
     // 文件二进制以 base64 存于 config.fileData
-    const fileData = (source.config as any).fileData as string | undefined
+    const fileData = (source.config as { fileData?: string }).fileData
     if (!fileData) {
       throw new Error('Excel 文件未上传或内容为空')
     }
+    // base64 长度约为字节数的 4/3，提前估算拦截超大文件
+    if (Math.floor(fileData.length * 0.75) > MAX_EXCEL_BYTES) {
+      throw new Error(`Excel 文件过大，超过 ${MAX_EXCEL_MB}MB 上限`)
+    }
     const bytes = base64ToUint8Array(fileData)
-    const wb = XLSX.read(bytes, { type: 'array' })
-    // 数据集可指定 sheet，否则取第一个
-    const sheetName = dataSet.extractor.sheet ?? source.config.sheet ?? wb.SheetNames[0]
-    const sheet = wb.Sheets[sheetName]
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(bytes.buffer as ArrayBuffer)
+
+    const sheetName = dataSet.extractor.sheet ?? source.config.sheet
+    const sheet = sheetName ? wb.getWorksheet(sheetName) : wb.worksheets[0]
     if (!sheet) {
-      throw new Error(`Sheet "${sheetName}" 不存在，可用：${wb.SheetNames.join(', ')}`)
+      const names = wb.worksheets.map((w) => w.name).join(', ')
+      throw new Error(`Sheet "${sheetName ?? ''}" 不存在，可用：${names}`)
     }
+
     const hasHeader = source.config.hasHeader ?? true
-    const rows = XLSX.utils.sheet_to_json<DataRow>(sheet, {
-      header: hasHeader ? undefined : 1,
-      defval: '',
-      raw: true
-    })
-    // 无表头时，将数组行转为 {col0, col1...}
-    if (!hasHeader) {
-      return rows.map((row) => {
-        if (Array.isArray(row)) {
-          const obj: DataRow = {}
-          ;(row as unknown[]).forEach((v, i) => (obj[`col${i}`] = v))
-          return obj
-        }
-        return row
-      })
-    }
-    return rows
+    return hasHeader ? readWithHeader(sheet) : readWithoutHeader(sheet)
   }
+}
+
+/** 规范化 ExcelJS 单元格值：公式取结果、富文本取文本、超链接取文字 */
+function normalizeCellValue(value: ExcelJS.CellValue): unknown {
+  if (value == null) return ''
+  if (value instanceof Date) return value
+  if (typeof value === 'object') {
+    const v = value as unknown as Record<string, unknown>
+    if ('result' in v) return v.result ?? ''
+    if ('richText' in v && Array.isArray(v.richText)) {
+      return (v.richText as { text?: string }[]).map((t) => t.text ?? '').join('')
+    }
+    if ('text' in v) return v.text ?? ''
+    if ('hyperlink' in v) return v.text ?? v.hyperlink ?? ''
+    return ''
+  }
+  return value
+}
+
+/** 带表头解析：首行作为字段名 */
+function readWithHeader(sheet: ExcelJS.Worksheet): DataRow[] {
+  const headers: Record<number, string> = {}
+  sheet.getRow(1).eachCell({ includeEmpty: false }, (cell, col) => {
+    const name = String(normalizeCellValue(cell.value) ?? '').trim()
+    headers[col] = name || `col${col - 1}`
+  })
+  const rows: DataRow[] = []
+  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber === 1) return
+    const obj: DataRow = {}
+    for (const key of Object.keys(headers)) {
+      const col = Number(key)
+      obj[headers[col]] = normalizeCellValue(row.getCell(col).value)
+    }
+    rows.push(obj)
+  })
+  return rows
+}
+
+/** 无表头解析：列号映射为 col0, col1... */
+function readWithoutHeader(sheet: ExcelJS.Worksheet): DataRow[] {
+  const colCount = sheet.actualColumnCount || sheet.columnCount
+  const rows: DataRow[] = []
+  sheet.eachRow({ includeEmpty: false }, (row) => {
+    const obj: DataRow = {}
+    for (let col = 1; col <= colCount; col++) {
+      obj[`col${col - 1}`] = normalizeCellValue(row.getCell(col).value)
+    }
+    rows.push(obj)
+  })
+  return rows
 }
 
 /** base64 转 Uint8Array */

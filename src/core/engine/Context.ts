@@ -20,11 +20,15 @@ export interface ExpandContext extends EvalContext {
 }
 
 /** 创建根上下文 */
-export function createRootContext(params?: Record<string, unknown>): ExpandContext {
+export function createRootContext(
+  params?: Record<string, unknown>,
+  datasetRows?: Record<string, Record<string, unknown>[]>
+): ExpandContext {
   return {
     rowRange: [0, 0],
     colRange: [0, 0],
-    params
+    params,
+    datasetRows
   }
 }
 
@@ -39,6 +43,7 @@ export function deriveContext(
   return {
     rowData,
     datasetName,
+    datasetRows: parent.datasetRows,
     parent,
     rowRange,
     colRange

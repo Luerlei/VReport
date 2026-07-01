@@ -11,6 +11,7 @@ import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 import type { RenderedCell } from '@/core/engine/ExpandEngine'
 import { styleToCss } from '@/core/render/StyleResolver'
+import { computeFlowColWidths, computeFlowPlacements } from '@/core/render/flowLayout'
 import { ConditionEngine } from '@/core/format/ConditionEngine'
 import type { ConditionFormat } from '@/types'
 import type { Exporter, ExportOptions } from './types'
@@ -119,6 +120,9 @@ export class PdfExporter implements Exporter {
     title?: string
   ): HTMLElement {
     const condEngine = new ConditionEngine(this.conditionFormats)
+    const flowColWidths = computeFlowColWidths(grid, colWidths)
+    const placements = computeFlowPlacements(grid)
+
     const wrapper = document.createElement('div')
     wrapper.style.position = 'fixed'
     wrapper.style.left = '-99999px'
@@ -141,22 +145,29 @@ export class PdfExporter implements Exporter {
 
     // colgroup
     const colgroup = document.createElement('colgroup')
-    colWidths.forEach((w) => {
+    flowColWidths.forEach((w) => {
       const col = document.createElement('col')
       col.style.width = w + 'px'
       colgroup.appendChild(col)
     })
     table.appendChild(colgroup)
 
+    const rowMap = new Map<number, typeof placements>()
+    for (const p of placements) {
+      const arr = rowMap.get(p.rowIndex) ?? []
+      arr.push(p)
+      rowMap.set(p.rowIndex, arr)
+    }
+
     const tbody = document.createElement('tbody')
     grid.forEach((row, r) => {
       const tr = document.createElement('tr')
       tr.style.height = (rowHeights[r] ?? 28) + 'px'
-      row.forEach((cell) => {
-        if (!cell) return
+      ;(rowMap.get(r) ?? []).forEach((p) => {
+        const cell = p.cell
         const td = document.createElement('td')
-        td.rowSpan = cell.rowSpan
-        td.colSpan = cell.colSpan
+        td.rowSpan = p.rowSpan
+        td.colSpan = p.colSpan
         const baseStyle = styleToCss(cell.source.style)
         const condStyle = condEngine.resolve(cell.source.name, cell.value, cell.context as any)
         const merged = { ...baseStyle, ...styleToCss({ ...cell.source.style, ...condStyle } as any) }

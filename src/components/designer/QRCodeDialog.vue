@@ -5,7 +5,7 @@
     width="500px"
     :destroyOnClose="true"
     @ok="onOk"
-    @cancel="onCancel"
+    @cancel="close"
   >
     <a-form layout="vertical">
       <a-form-item label="数据内容">
@@ -68,10 +68,11 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import QRCode from 'qrcode'
 import type { QRConfig } from '@/types'
+import { useFormDialog } from '@/composables/useFormDialog'
 
 const props = defineProps<{ visible: boolean; initial?: QRConfig }>()
 const emit = defineEmits<{
@@ -79,35 +80,26 @@ const emit = defineEmits<{
   (e: 'confirm', config: QRConfig): void
 }>()
 
-const form = reactive<QRConfig>({
-  data: '',
-  errorCorrectLevel: 'M',
-  size: 4,
-  foreground: '#000000',
-  background: '#ffffff',
-  margin: 2
-})
-
 const previewCanvasRef = ref<HTMLCanvasElement | null>(null)
 
-watch(
-  () => props.visible,
-  (v) => {
-    if (v) {
-      Object.assign(form, {
-        data: '',
-        errorCorrectLevel: 'M',
-        size: 4,
-        foreground: '#000000',
-        background: '#ffffff',
-        margin: 2,
-        ...(props.initial ?? {})
-      })
-      nextTick(renderPreview)
-    }
-  },
-  { immediate: true }
-)
+function createDefaults(): QRConfig {
+  return {
+    data: '',
+    errorCorrectLevel: 'M',
+    size: 4,
+    foreground: '#000000',
+    background: '#ffffff',
+    margin: 2
+  }
+}
+
+const { form, close } = useFormDialog<QRConfig>({
+  isVisible: () => props.visible,
+  createDefaults,
+  getInitial: () => props.initial,
+  onClose: () => emit('update:visible', false),
+  onOpen: () => nextTick(renderPreview)
+})
 
 watch(form, renderPreview, { deep: true })
 
@@ -160,11 +152,7 @@ function onOk() {
     return
   }
   emit('confirm', { ...form })
-  emit('update:visible', false)
-}
-
-function onCancel() {
-  emit('update:visible', false)
+  close()
 }
 </script>
 

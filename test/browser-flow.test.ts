@@ -4,6 +4,7 @@
  */
 // 必须最先导入 fake-indexeddb，让 Dexie 能检测到
 import 'fake-indexeddb/auto'
+import { it, expect } from 'vitest'
 import { createEmptyTemplate, gridFromTemplate, gridToTemplate, exportTemplateFile, importTemplateFile } from '../src/core/serializer/Serializer'
 import { saveTemplate, getTemplate, deleteTemplate, listTemplates } from '../src/utils/db'
 import { seedTemplatesIfEmpty } from '../src/utils/seed'
@@ -78,7 +79,7 @@ async function testTemplateCRUD() {
   await saveTemplate(tpl)
 
   // Read
-  let loaded = await getTemplate(tpl.id)
+  const loaded = await getTemplate(tpl.id)
   assert(!!loaded, 'C: 创建后应能读取')
   assert(loaded?.description === '测试描述', 'C: 描述应匹配')
   assert(loaded?.tags?.length === 2, `C: 标签数应为 2，实际 ${loaded?.tags?.length}`)
@@ -342,7 +343,9 @@ async function main() {
     failed++
   }
   console.log(`\n=== 测试结果: ${passed} 通过, ${failed} 失败 ===`)
-  process.exit(failed > 0 ? 1 : 0)
 }
 
-main()
+it('浏览器流程模拟', async () => {
+  await main()
+  expect(failed, `存在 ${failed} 个失败断言`).toBe(0)
+})

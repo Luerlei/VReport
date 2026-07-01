@@ -119,6 +119,8 @@ export interface ReportTemplate {
   id: string
   name: string
   version: string
+  /** 持久化结构版本，用于导入时的兼容迁移 */
+  schemaVersion?: number
   createdAt: number
   updatedAt: number
   page: PageConfig

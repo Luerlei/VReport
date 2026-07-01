@@ -57,6 +57,18 @@ export class Evaluator {
         const val = resolvePath(curCtx.params, parts.slice(1))
         if (val !== undefined) return val
       }
+
+      // 动态数据集变量: 当无当前行字段值时，支持 ${ds.field} 返回整列数组。
+      // 例如 sum(${order.amount}) 在静态汇总格中可随数据集行数变化自动计算。
+      if (curCtx.datasetRows && parts.length > 1 && parts[0] !== 'param') {
+        const rows = curCtx.datasetRows[parts[0]]
+        if (Array.isArray(rows) && rows.length) {
+          const values = rows
+            .map((row) => resolvePath(row as Record<string, unknown>, parts.slice(1)))
+            .filter((v) => v !== undefined)
+          if (values.length) return values
+        }
+      }
       curCtx = curCtx.parent
     }
     return undefined

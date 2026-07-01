@@ -29,6 +29,21 @@
       </a-tooltip>
 
       <div class="canvas-wrap">
+        <a-alert
+          v-if="saveConflictWarnings.length"
+          type="warning"
+          show-icon
+          class="save-conflict-alert"
+          :message="`保存前检测到 ${saveConflictWarnings.length} 个冲突风险`"
+        >
+          <template #description>
+            <ul class="save-conflict-list">
+              <li v-for="(w, i) in saveConflictWarnings.slice(0, 8)" :key="`save-conflict-${i}`">
+                <a @click.prevent="locateConflict(w)">{{ w.message }}</a>
+              </li>
+            </ul>
+          </template>
+        </a-alert>
         <CellToolbar
           @insert-image="openImageDialog"
           @insert-qrcode="openQRDialog"
@@ -76,7 +91,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons-vue'
@@ -95,6 +110,7 @@ import BarcodeDialog from '@/components/designer/BarcodeDialog.vue'
 import ChartDialog from '@/components/designer/ChartDialog.vue'
 import { cellName, type Cell } from '@/core/cell/types'
 import type { ImageConfig, QRConfig, BarcodeConfig, ChartConfig } from '@/types'
+import type { DesignerConflictWarning } from '@/stores/designer'
 
 const route = useRoute()
 const report = useReportStore()
@@ -110,6 +126,7 @@ const statusText = computed(() => {
   const s = designer.selection
   return `${cellName(s.startRow, s.startCol)} · 行 ${s.startRow + 1} · 列 ${s.startCol + 1} · 缩放 ${designer.zoom}%`
 })
+const saveConflictWarnings = computed(() => designer.saveConflictWarnings)
 
 // ===== 插入元素对话框 =====
 const imageDialogVisible = ref(false)
@@ -193,8 +210,16 @@ onMounted(async () => {
   }
   // 确保画布在 grid 加载后正确测量视口
   await nextTick()
+  applyFocusFromRoute()
   document.addEventListener('keydown', onKeydown)
 })
+
+watch(
+  () => route.query.focus,
+  () => {
+    applyFocusFromRoute()
+  }
+)
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onKeydown)
@@ -211,8 +236,61 @@ function onKeydown(e: KeyboardEvent) {
     history.redo()
   } else if (ctrl && e.key.toLowerCase() === 's') {
     e.preventDefault()
-    report.save()
+    void saveWithConflictCheck()
   }
+}
+
+async function saveWithConflictCheck() {
+  try {
+    const result = await report.saveWithConflictCheck()
+    if (!result.ok) {
+      designer.setSaveConflictWarnings(
+        result.warnings.map((w) => ({
+          message: w.message,
+          sourceCell: w.sourceCell,
+          targetCell: w.targetCell
+        }))
+      )
+      message.warning(`检测到 ${result.warnings.length} 个冲突风险，请先处理后再保存`, 4)
+      return
+    }
+    designer.clearSaveConflictWarnings()
+    message.success('保存成功')
+  } catch (e: any) {
+    console.error('保存失败:', e)
+    message.error('保存失败：' + (e?.message ?? e))
+  }
+}
+
+function applyFocusFromRoute() {
+  const raw = route.query.focus
+  if (!raw || !report.grid) return
+  const focus = Array.isArray(raw) ? raw[0] : raw
+  if (typeof focus !== 'string') return
+  const target = parseCellName(focus)
+  if (!target) return
+  designer.setSelection(target.row, target.col)
+  nextTick(() => canvasRef.value?.focusCell(target.row, target.col))
+}
+
+function parseCellName(name: string): { row: number; col: number } | null {
+  const m = name.match(/^([A-Za-z]+)([0-9]+)$/)
+  if (!m) return null
+  let col = 0
+  const letters = m[1].toUpperCase()
+  for (let i = 0; i < letters.length; i++) {
+    col = col * 26 + (letters.charCodeAt(i) - 64)
+  }
+  return { row: Math.max(0, parseInt(m[2], 10) - 1), col: Math.max(0, col - 1) }
+}
+
+function locateConflict(warning: DesignerConflictWarning) {
+  const ref = warning.sourceCell ?? warning.targetCell
+  if (!ref) return
+  const target = parseCellName(ref)
+  if (!target) return
+  designer.setSelection(target.row, target.col)
+  nextTick(() => canvasRef.value?.focusCell(target.row, target.col))
 }
 </script>
 
@@ -353,5 +431,18 @@ function onKeydown(e: KeyboardEvent) {
 .saved-tip {
   color: #52c41a;
   font-size: 12px;
+}
+
+.save-conflict-alert {
+  margin: 8px 8px 0;
+}
+
+.save-conflict-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.save-conflict-list li {
+  line-height: 1.6;
 }
 </style>

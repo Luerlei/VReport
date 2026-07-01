@@ -50,9 +50,10 @@ export class Aggregator {
 
     const ctx: EvalContext = {
       rowData: rc.context?.rowData,
+      datasetRows: rc.context?.datasetRows,
       params: rc.context?.params,
-      getCell: (c, r) => this.getCellValue(r, c),
-      getRange: (sc, sr, ec, er) => this.getRangeValues(sr, sc, er, ec),
+      getCell: (c, r) => this.getCellValueByTemplateRef(rc, r, c),
+      getRange: (sc, sr, ec, er) => this.getRangeValuesByReference(rc, sr, sc, er, ec),
       parent: rc.context?.parent
     }
 
@@ -79,6 +80,88 @@ export class Aggregator {
     return val
   }
 
+  /**
+   * 单个单元格引用按模板源坐标解析，避免其它数据集展开导致渲染坐标漂移后引用失真。
+   * 若找不到语义匹配目标，则回退到旧的渲染坐标语义。
+   */
+  private getCellValueByTemplateRef(current: RenderedCell, templateRow: number, templateCol: number): unknown {
+    const target = this.findBestRenderedCellForTemplateRef(current, templateRow, templateCol)
+    if (target) {
+      return this.getCellValue(target.row, target.col)
+    }
+    return this.getCellValue(templateRow, templateCol)
+  }
+
+  /** 根据模板源坐标找到最合适的渲染单元格 */
+  private findBestRenderedCellForTemplateRef(
+    current: RenderedCell,
+    templateRow: number,
+    templateCol: number
+  ): RenderedCell | null {
+    const candidates: RenderedCell[] = []
+    for (const row of this.grid) {
+      for (const cell of row) {
+        if (cell && cell.source.row === templateRow && cell.source.col === templateCol) {
+          candidates.push(cell)
+        }
+      }
+    }
+    if (!candidates.length) return null
+    if (candidates.length === 1) return candidates[0]
+
+    let best: RenderedCell | null = null
+    let bestScore = -1
+    for (const candidate of candidates) {
+      const score = this.scoreContextAffinity(current.context, candidate.context)
+      if (score > bestScore) {
+        best = candidate
+        bestScore = score
+      }
+    }
+    return best ?? candidates[0]
+  }
+
+  /** 当前单元格上下文与候选单元格上下文的亲和度，越大越优先 */
+  private scoreContextAffinity(a?: ExpandContext, b?: ExpandContext): number {
+    if (!a || !b) return 0
+    if (a === b) return 1000
+
+    const chainA = this.getContextChain(a)
+    const chainB = this.getContextChain(b)
+    for (let i = 0; i < chainA.length; i++) {
+      const ctxA = chainA[i]
+      const idxB = chainB.indexOf(ctxA)
+      if (idxB >= 0) {
+        return 800 - i - idxB
+      }
+    }
+
+    for (let i = 0; i < chainA.length; i++) {
+      for (let j = 0; j < chainB.length; j++) {
+        const ctxA = chainA[i]
+        const ctxB = chainB[j]
+        if (ctxA.rowData && ctxA.rowData === ctxB.rowData) {
+          return 600 - i - j
+        }
+      }
+    }
+
+    if (a.datasetName && b.datasetName && a.datasetName === b.datasetName) {
+      return 200
+    }
+    return 1
+  }
+
+  private getContextChain(ctx: ExpandContext): ExpandContext[] {
+    const chain: ExpandContext[] = []
+    let cur: ExpandContext | undefined = ctx
+    while (cur) {
+      chain.push(cur)
+      cur = cur.parent
+    }
+    return chain
+  }
+
   /** 获取区域所有值 */
   private getRangeValues(startRow: number, startCol: number, endRow: number, endCol: number): unknown[] {
     const values: unknown[] = []
@@ -92,5 +175,53 @@ export class Aggregator {
       }
     }
     return values
+  }
+
+  /**
+   * 范围引用优先按模板源坐标解析；若范围明显超出模板边界，则回退为旧的渲染坐标语义，兼容已有汇总模板。
+   */
+  private getRangeValuesByReference(
+    current: RenderedCell,
+    startRow: number,
+    startCol: number,
+    endRow: number,
+    endCol: number
+  ): unknown[] {
+    if (!this.shouldUseTemplateRange(startRow, startCol, endRow, endCol)) {
+      return this.getRangeValues(startRow, startCol, endRow, endCol)
+    }
+
+    const values: unknown[] = []
+    const minRow = Math.min(startRow, endRow)
+    const maxRow = Math.max(startRow, endRow)
+    const minCol = Math.min(startCol, endCol)
+    const maxCol = Math.max(startCol, endCol)
+    for (let r = minRow; r <= maxRow; r++) {
+      for (let c = minCol; c <= maxCol; c++) {
+        const target = this.findBestRenderedCellForTemplateRef(current, r, c)
+        if (!target) continue
+        const value = this.getCellValue(target.row, target.col)
+        if (value !== undefined) values.push(value)
+      }
+    }
+    return values
+  }
+
+  /** 模板范围语义仅在端点都落在模板边界内时启用 */
+  private shouldUseTemplateRange(startRow: number, startCol: number, endRow: number, endCol: number): boolean {
+    let maxTemplateRow = -1
+    let maxTemplateCol = -1
+    for (const row of this.grid) {
+      for (const cell of row) {
+        if (!cell) continue
+        maxTemplateRow = Math.max(maxTemplateRow, cell.source.row)
+        maxTemplateCol = Math.max(maxTemplateCol, cell.source.col)
+      }
+    }
+    return (
+      startRow >= 0 && endRow >= 0 && startCol >= 0 && endCol >= 0 &&
+      startRow <= maxTemplateRow && endRow <= maxTemplateRow &&
+      startCol <= maxTemplateCol && endCol <= maxTemplateCol
+    )
   }
 }

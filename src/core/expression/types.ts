@@ -65,6 +65,8 @@ export type AstNode =
 export interface EvalContext {
   /** 当前数据行（字段取值来源） */
   rowData?: Record<string, unknown>
+  /** 所有数据集行缓存（用于 ${ds.field} 动态聚合） */
+  datasetRows?: Record<string, Record<string, unknown>[]>
   /** 参数值 */
   params?: Record<string, unknown>
   /** 单元格取值回调（用于单元格引用） */

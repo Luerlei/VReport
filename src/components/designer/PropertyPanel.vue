@@ -22,10 +22,6 @@
             <span class="prop-value">{{ currentCell?.name ?? '-' }}</span>
           </div>
           <div class="prop-cell">
-            <span class="prop-label">合并</span>
-            <span class="prop-value">{{ currentCell?.rowSpan ?? 1 }} × {{ currentCell?.colSpan ?? 1 }}</span>
-          </div>
-          <div class="prop-cell">
             <span class="prop-label">类型</span>
             <span class="prop-value">{{ cellTypeLabel }}</span>
           </div>
@@ -185,10 +181,12 @@
           <span class="prop-label">左主格</span>
           <a-input
             v-model:value="leftMasterValue"
+            allow-clear
             size="small"
             style="flex:1"
             :placeholder="autoLeftMaster ? `自动:${autoLeftMaster}` : '自动计算'"
-            @change="onLeftMasterChange"
+            @blur="onLeftMasterChange"
+            @pressEnter="onLeftMasterChange"
           />
           <a-tooltip :title="designer.masterPicking === 'left' ? '拾取中(点击单元格)' : '拾取单元格'">
             <a-button size="small" type="text" :class="{ active: designer.masterPicking === 'left' }" @click="startPickMaster('left')">
@@ -200,10 +198,12 @@
           <span class="prop-label">上主格</span>
           <a-input
             v-model:value="topMasterValue"
+            allow-clear
             size="small"
             style="flex:1"
             :placeholder="autoTopMaster ? `自动:${autoTopMaster}` : '自动计算'"
-            @change="onTopMasterChange"
+            @blur="onTopMasterChange"
+            @pressEnter="onTopMasterChange"
           />
           <a-tooltip :title="designer.masterPicking === 'top' ? '拾取中(点击单元格)' : '拾取单元格'">
             <a-button size="small" type="text" :class="{ active: designer.masterPicking === 'top' }" @click="startPickMaster('top')">
@@ -232,7 +232,7 @@
             style="flex:1"
             placeholder="选择数据集"
             allowClear
-            @change="onDataChange"
+            @change="onDatasetChange"
           >
             <a-select-option
               v-for="ds in report.currentTemplate?.dataSets ?? []"
@@ -243,7 +243,20 @@
         </div>
         <div class="prop-row">
           <span class="prop-label">字段</span>
-          <a-input v-model:value="fieldValue" size="small" style="flex:1" placeholder="字段名" @change="onDataChange" />
+          <a-select
+            v-model:value="fieldValue"
+            size="small"
+            style="flex:1"
+            placeholder="选择字段"
+            allowClear
+            @change="onDataChange"
+          >
+            <a-select-option
+              v-for="field in selectedDatasetFields"
+              :key="field"
+              :value="field"
+            >{{ field }}</a-select-option>
+          </a-select>
         </div>
         <div class="prop-row">
           <span class="prop-label">聚合</span>
@@ -261,37 +274,72 @@
       </div>
     </div>
 
-    <!-- 分组：高级 -->
+    <!-- 分组：规则 -->
     <div class="prop-group">
       <div class="group-header" @click="groups.advanced = !groups.advanced">
         <span class="group-arrow">
           <DownOutlined v-if="groups.advanced" />
           <RightOutlined v-else />
         </span>
-        <span class="group-title">高级</span>
+        <span class="group-title">规则</span>
+        <span v-if="currentCellName" class="group-title-actions" @click.stop>
+          <a-tooltip title="新增规则">
+            <a-button size="small" type="text" class="icon-action-btn" @click.stop="openCreateCellRule">
+              <template #icon><PlusOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </span>
       </div>
       <div v-show="groups.advanced" class="group-body">
-        <a-button size="small" block @click="showCondDialog = true">
-          <template #icon><FilterOutlined /></template>
-          管理条件格式
-        </a-button>
-        <div v-if="condCount" class="cond-tip">已配置 {{ condCount }} 条规则</div>
+        <div v-if="cellConditionFormats.length" class="cell-cond-cards">
+          <a-card v-for="fmt in cellConditionFormats" :key="fmt.id" size="small" class="cell-cond-card">
+            <template #title>{{ fmt.name }}</template>
+            <template #extra>
+              <a-space size="small">
+                <a-button size="small" type="text" class="icon-action-btn" @click="openEditCellRule(fmt.id)">
+                  <template #icon><EditOutlined /></template>
+                </a-button>
+                <a-button size="small" type="text" danger class="icon-action-btn" @click="removeCellRule(fmt.id)">
+                  <template #icon><DeleteOutlined /></template>
+                </a-button>
+              </a-space>
+            </template>
+            <div class="cell-rule-grid">
+              <div class="cell-rule-item"><span class="rule-key">范围</span><span class="rule-val">{{ formatScopeDisplay(fmt) }}</span></div>
+              <div class="cell-rule-item"><span class="rule-key">类型</span><span class="rule-val">{{ formatRuleType(fmt) }}</span></div>
+              <div class="cell-rule-item"><span class="rule-key">条件</span><span class="rule-val">{{ formatRuleSummary(fmt) }}</span></div>
+              <div class="cell-rule-item"><span class="rule-key">字体色</span><span class="rule-val color-chip-wrap"><span class="color-chip" :style="{ background: primaryRuleStyle(fmt).color || '#000000' }"></span>{{ primaryRuleStyle(fmt).color || '-' }}</span></div>
+              <div class="cell-rule-item"><span class="rule-key">背景</span><span class="rule-val color-chip-wrap"><span class="color-chip" :style="{ background: primaryRuleStyle(fmt).background || '#ffffff' }"></span>{{ primaryRuleStyle(fmt).background || '-' }}</span></div>
+              <div class="cell-rule-item"><span class="rule-key">加粗</span><span class="rule-val">{{ primaryRuleStyle(fmt).bold ? '是' : '否' }}</span></div>
+            </div>
+            <div class="rule-preview-strip" :style="rulePreviewStyle(fmt)">预览 Preview 123</div>
+          </a-card>
+        </div>
+        <div v-else-if="currentCellName" class="cond-tip">当前单元格暂无规则，点击“新增”可快速创建</div>
       </div>
     </div>
 
-    <ConditionDialog v-model:visible="showCondDialog" />
+    <ConditionDialog
+      v-model:visible="showCondDialog"
+      :target-cell="currentCellName"
+      :default-current-cell-only="true"
+      :prefill-scope="currentRuleScope"
+      :initial-edit-format-id="editingCellRuleId"
+    />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, watch, computed } from 'vue'
-import { DownOutlined, RightOutlined, FilterOutlined, EditOutlined, DeleteOutlined, AimOutlined } from '@ant-design/icons-vue'
+import { DownOutlined, RightOutlined, EditOutlined, DeleteOutlined, AimOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useReportStore } from '@/stores/report'
 import { useDesignerStore } from '@/stores/designer'
 import { useHistoryStore } from '@/stores/history'
 import { colIndexToName, type CellType } from '@/core/cell/types'
+import { getDatasetFieldOptions, normalizeFieldValueForDataset, datasetVarOfCell } from './propertyBindingHelpers'
 import ConditionDialog from './ConditionDialog.vue'
+import type { ConditionFormat } from '@/types'
 
 const report = useReportStore()
 const designer = useDesignerStore()
@@ -302,6 +350,7 @@ const emit = defineEmits<{
 }>()
 
 const showCondDialog = ref(false)
+const editingCellRuleId = ref<string | undefined>(undefined)
 
 /** 分组折叠状态（默认全展开） */
 const groups = reactive({
@@ -318,8 +367,87 @@ const currentCell = computed(() => {
   return report.grid.getRealCell(designer.selection.startRow, designer.selection.startCol)
 })
 
-const condCount = computed(() => {
-  return report.currentTemplate?.conditionFormats.reduce((sum, cf) => sum + cf.rules.length, 0) ?? 0
+const currentCellName = computed(() => currentCell.value?.name ?? '')
+/** 当前单元格若为数据集变量，返回 `dataset.field`（含内容回退解析），否则 null */
+const currentDatasetVar = computed(() => datasetVarOfCell(currentCell.value))
+const currentRuleScope = computed(() => {
+  const cell = currentCell.value
+  if (!cell) return undefined
+  const dsVar = currentDatasetVar.value
+  if (dsVar) {
+    return `var:${dsVar}`
+  }
+  return cell.name
+})
+
+const cellConditionFormats = computed(() => {
+  const name = currentCellName.value
+  if (!name) return []
+  const formats = report.currentTemplate?.conditionFormats ?? []
+  return formats.filter((fmt) => inConditionScope(fmt.scope, name))
+})
+
+function openCreateCellRule() {
+  editingCellRuleId.value = undefined
+  showCondDialog.value = true
+}
+
+function openEditCellRule(formatId: string) {
+  editingCellRuleId.value = formatId
+  showCondDialog.value = true
+}
+
+function removeCellRule(formatId: string) {
+  if (!report.currentTemplate) return
+  history.pushHistory()
+  report.currentTemplate.conditionFormats = report.currentTemplate.conditionFormats.filter((f) => f.id !== formatId)
+  report.markDirty()
+}
+
+function formatRuleSummary(fmt: ConditionFormat): string {
+  const rule = fmt.rules[0]
+  if (!rule) return '-'
+  if (rule.type === 'expression') return rule.expression || '表达式规则'
+  if (rule.operator === 'between' && Array.isArray(rule.value)) {
+    return `between ${rule.value[0]} ~ ${rule.value[1]}`
+  }
+  return `${rule.operator ?? ''} ${String(rule.value ?? '')}`.trim()
+}
+
+function formatRuleType(fmt: ConditionFormat): string {
+  const rule = fmt.rules[0]
+  if (!rule) return '-'
+  return rule.type === 'expression' ? '公式' : '单元格值'
+}
+
+function primaryRuleStyle(fmt: ConditionFormat) {
+  return fmt.rules[0]?.style ?? {}
+}
+
+function formatScopeDisplay(fmt: ConditionFormat): string {
+  if (fmt.scope.startsWith('var:')) {
+    return `${fmt.scope.slice(4)} (随数据集自动适配)`
+  }
+  // 当前单元格为数据集变量时，单格坐标规则也按变量展示（随数据量自动适配），
+  // 避免展示固定坐标。
+  const dsVar = currentDatasetVar.value
+  if (dsVar && fmt.scope === currentCellName.value) {
+    return `${dsVar} (随数据集自动适配)`
+  }
+  return fmt.scope
+}
+
+function rulePreviewStyle(fmt: ConditionFormat): Record<string, string> {
+  const s = primaryRuleStyle(fmt)
+  return {
+    color: (s.color as string) || '#1f2329',
+    background: (s.background as string) || '#f5f5f5',
+    fontWeight: s.bold ? '700' : '400'
+  }
+}
+
+watch(showCondDialog, (v) => {
+  if (!v) editingCellRuleId.value = undefined
 })
 
 /** 当前单元格类型中文标签 */
@@ -383,9 +511,31 @@ const aggregateValue = ref('none')
 const rowHeightValue = ref<number>(28)
 const colWidthValue = ref<number>(80)
 
+/** 当前所选数据集的字段列表 */
+const selectedDatasetFields = computed<string[]>(() => {
+  return getDatasetFieldOptions(report.currentTemplate, datasetValue.value)
+})
+
+/** 自动计算的左主格（用于占位提示） */
+const autoLeftMaster = computed(() => autoCalcMaster('left'))
+/** 自动计算的上主格（用于占位提示） */
+const autoTopMaster = computed(() => autoCalcMaster('top'))
+
 watch(
-  currentCell,
-  (cell) => {
+  () => [
+    currentCell.value?.id,
+    currentCell.value?.content,
+    currentCell.value?.expandDirection,
+    currentCell.value?.leftMasterCell,
+    currentCell.value?.topMasterCell,
+    currentCell.value?.dataset,
+    currentCell.value?.fieldName,
+    currentCell.value?.aggregate,
+    designer.selection.startRow,
+    designer.selection.startCol
+  ],
+  () => {
+    const cell = currentCell.value
     if (!cell) return
     contentValue.value = cell.content
     expandValue.value = cell.expandDirection
@@ -399,8 +549,7 @@ watch(
       rowHeightValue.value = report.grid.rows[designer.selection.startRow]?.height ?? 28
       colWidthValue.value = report.grid.columns[designer.selection.startCol]?.width ?? 80
     }
-    // 同步主格自动计算
-    updateMasterCells()
+    // 主格输入框只展示用户真实配置；自动值仅在 placeholder 提示。
   },
   { immediate: true }
 )
@@ -434,11 +583,6 @@ function onColWidthChange() {
   }
 }
 
-/** 自动计算的左主格（用于占位提示） */
-const autoLeftMaster = computed(() => autoCalcMaster('left'))
-/** 自动计算的上主格（用于占位提示） */
-const autoTopMaster = computed(() => autoCalcMaster('top'))
-
 /**
  * 自动计算主格:
  * - 向下展开时,左主格 = 同行左侧最近的"向下展开"单元格
@@ -468,15 +612,6 @@ function autoCalcMaster(which: 'left' | 'top'): string {
   return ''
 }
 
-/** 更新主格显示值:有用户设定值则显示,否则显示自动计算值 */
-function updateMasterCells() {
-  const cur = currentCell.value
-  if (!cur) return
-  // 显示当前生效值:优先用户设定,无则用自动计算
-  leftMasterValue.value = cur.leftMasterCell ?? autoLeftMaster.value
-  topMasterValue.value = cur.topMasterCell ?? autoTopMaster.value
-}
-
 /** 启动主格拾取模式 */
 function startPickMaster(which: 'left' | 'top') {
   // 再次点击同一按钮则取消拾取
@@ -491,16 +626,22 @@ function startPickMaster(which: 'left' | 'top') {
 /** 左主格输入变更 */
 function onLeftMasterChange() {
   if (!currentCell.value) return
+  const next = leftMasterValue.value.trim()
+  if ((currentCell.value.leftMasterCell ?? '') === next) return
   history.pushHistory()
-  currentCell.value.leftMasterCell = leftMasterValue.value || undefined
+  currentCell.value.leftMasterCell = next || undefined
+  leftMasterValue.value = next
   report.markDirty()
 }
 
 /** 上主格输入变更 */
 function onTopMasterChange() {
   if (!currentCell.value) return
+  const next = topMasterValue.value.trim()
+  if ((currentCell.value.topMasterCell ?? '') === next) return
   history.pushHistory()
-  currentCell.value.topMasterCell = topMasterValue.value || undefined
+  currentCell.value.topMasterCell = next || undefined
+  topMasterValue.value = next
   report.markDirty()
 }
 
@@ -529,8 +670,6 @@ function onExpandChange() {
   currentCell.value.expandDirection = expandValue.value
   // 退出拾取模式
   designer.masterPicking = null
-  // 若用户未自定义主格,用自动计算覆盖显示;已自定义则保留
-  updateMasterCells()
   report.markDirty()
 }
 
@@ -541,6 +680,42 @@ function onDataChange() {
   currentCell.value.fieldName = fieldValue.value || undefined
   currentCell.value.aggregate = aggregateValue.value as any
   report.markDirty()
+}
+
+/** 数据集切换后，字段只允许选择该数据集下可用字段 */
+function onDatasetChange() {
+  fieldValue.value = normalizeFieldValueForDataset(fieldValue.value, selectedDatasetFields.value)
+  onDataChange()
+}
+
+function inConditionScope(scope: string, cellName: string): boolean {
+  if (!scope || !cellName) return false
+  if (scope.startsWith('var:')) {
+    const cell = currentCell.value
+    if (!cell?.dataset || !cell.fieldName) return false
+    return scope === `var:${cell.dataset}.${cell.fieldName}`
+  }
+  if (!scope.includes(':')) return scope === cellName
+  const [start, end] = scope.split(':')
+  const cur = parseCellName(cellName)
+  const s = parseCellName(start)
+  const e = parseCellName(end)
+  if (!cur || !s || !e) return false
+  return cur.row >= Math.min(s.row, e.row) &&
+    cur.row <= Math.max(s.row, e.row) &&
+    cur.col >= Math.min(s.col, e.col) &&
+    cur.col <= Math.max(s.col, e.col)
+}
+
+function parseCellName(name: string): { row: number; col: number } | null {
+  const m = name.match(/^([A-Za-z]+)(\d+)$/)
+  if (!m) return null
+  let col = 0
+  const upper = m[1].toUpperCase()
+  for (let i = 0; i < upper.length; i++) {
+    col = col * 26 + (upper.charCodeAt(i) - 64)
+  }
+  return { row: Number(m[2]) - 1, col: col - 1 }
 }
 </script>
 
@@ -614,6 +789,12 @@ function onDataChange() {
   color: #1f2329;
 }
 
+.group-title-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
 .group-body {
   padding: 4px 10px 6px;
 }
@@ -682,6 +863,91 @@ function onDataChange() {
   font-size: 12px;
   color: #888;
   text-align: center;
+}
+
+.cell-cond-title {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #595959;
+  font-weight: 600;
+}
+
+.icon-action-btn {
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+}
+
+.cell-cond-cards {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cell-cond-card :deep(.ant-card-head) {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.cell-cond-card :deep(.ant-card-body) {
+  padding: 8px 10px;
+}
+
+.cell-rule-line {
+  font-size: 12px;
+  color: #595959;
+  line-height: 1.5;
+}
+
+.rule-preview-strip {
+  margin-top: 8px;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid #d9d9d9;
+}
+
+.cell-rule-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+
+.cell-rule-item {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rule-key {
+  color: #8c8c8c;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.rule-val {
+  color: #1f2329;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.color-chip {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid #d9d9d9;
+  flex-shrink: 0;
 }
 
 .property-panel :deep(.ant-radio-group) {

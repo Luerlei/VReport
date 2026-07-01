@@ -2,13 +2,23 @@
   <div class="rendered-table-wrap" :style="{ transform: `scale(${zoom / 100})`, transformOrigin: 'top left' }">
     <table class="rendered-table" border="0" cellspacing="0" cellpadding="0">
       <colgroup>
-        <col v-for="(w, i) in colWidths" :key="i" :style="{ width: w + 'px' }" />
+        <col v-if="showHeaders" :style="{ width: rowHeaderWidth + 'px' }" />
+        <col v-for="(w, i) in flowColWidths" :key="`col-${i}`" :style="{ width: w + 'px' }" />
       </colgroup>
+      <thead v-if="showHeaders">
+        <tr>
+          <th class="index-corner"></th>
+          <th v-for="(_, c) in flowColWidths" :key="`h-${c}`" class="index-header">
+            {{ colName(c) }}
+          </th>
+        </tr>
+      </thead>
       <tbody>
         <tr v-for="(row, r) in grid" :key="r" :style="{ height: rowHeights[r] + 'px' }">
+          <th v-if="showHeaders" class="index-header index-row">{{ r + 1 }}</th>
           <template v-for="(cell, c) in row" :key="`${r}-${c}`">
             <td
-              v-if="cell"
+              v-if="shouldRenderCellAt(r, c, cell)"
               :rowspan="cell.rowSpan"
               :colspan="cell.colSpan"
               :style="cellCss(cell)"
@@ -49,6 +59,7 @@
 import { computed } from 'vue'
 import type { RenderedCell } from '@/core/engine/ExpandEngine'
 import { styleToCss } from '@/core/render/StyleResolver'
+import { computeFlowColWidths, shouldRenderCell } from '@/core/render/flowLayout'
 import { ConditionEngine } from '@/core/format/ConditionEngine'
 import type { ConditionFormat, ImageConfig } from '@/types'
 import ChartCell from './ChartCell.vue'
@@ -60,11 +71,36 @@ const props = defineProps<{
   rowHeights: number[]
   colWidths: number[]
   zoom?: number
+  showRowColHeaders?: boolean
   conditionFormats?: ConditionFormat[]
 }>()
 
 const zoom = computed(() => props.zoom ?? 100)
+const showHeaders = computed(() => props.showRowColHeaders ?? false)
+const rowHeaderWidth = 48
 const conditionEngine = computed(() => new ConditionEngine(props.conditionFormats ?? []))
+
+function shouldRenderCellAt(row: number, col: number, cell: RenderedCell | null): cell is RenderedCell {
+  return shouldRenderCell(props.grid[row] ?? [], col, cell)
+}
+
+/**
+ * 计算预览列宽（流式）：与 tbody 的 `<td v-if="cell">` 一致，按可见单元格自动排布。
+ * 这样可避免“绝对坐标存在空隙列”时表头多出 I/J，而表体实际内容已左对齐收拢。
+ */
+const flowColWidths = computed(() => {
+  return computeFlowColWidths(props.grid, props.colWidths)
+})
+
+function colName(col: number): string {
+  let name = ''
+  let n = col
+  while (n >= 0) {
+    name = String.fromCharCode(65 + (n % 26)) + name
+    n = Math.floor(n / 26) - 1
+  }
+  return name
+}
 
 function cellCss(cell: RenderedCell): Record<string, string> {
   const base = styleToCss(cell.source.style)
@@ -72,7 +108,8 @@ function cellCss(cell: RenderedCell): Record<string, string> {
   const condStyle = conditionEngine.value.resolve(
     cell.source.name,
     cell.value,
-    cell.context as any
+    cell.context as any,
+    cell.source
   )
   return { ...base, ...styleToCss({ ...cell.source.style, ...condStyle } as any) }
 }
@@ -179,6 +216,30 @@ function formatDate(d: Date, fmt: string): string {
   padding: 2px 4px;
   overflow: hidden;
   word-break: break-all;
+  position: relative;
+}
+
+.rendered-table th {
+  border: 1px solid #d9d9d9;
+  background: #fafafa;
+  color: #4b5563;
+  font-weight: 600;
+  text-align: center;
+  padding: 0;
+}
+
+.index-corner,
+.index-header,
+.index-row {
+  user-select: none;
+}
+
+.index-header {
+  height: 28px;
+}
+
+.index-row {
+  min-width: 48px;
 }
 
 .chart-cell,
