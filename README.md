@@ -6,6 +6,7 @@
 
 ### 核心引擎
 - **展开引擎**：主格树 + 上下文传播，支持向下 / 向右展开，多数据集嵌套
+- **右展开增强**：支持同一行多右展开、跨行同字段重复右展开，避免同带重叠
 - **表达式引擎**：Lexer + Parser + Evaluator，40+ 内置函数，Excel 风格公式
 - **聚合引擎**：递归求值，自动循环依赖检测（`#CIRC!`）
 - **参数引擎**：非破坏性数据集过滤，支持多种参数类型（文本/下拉/数字/日期）
@@ -13,10 +14,11 @@
 
 ### 设计器
 - **可视化画布**：虚拟滚动，合并单元格，行高列宽拖拽调整
-- **属性面板**：展开方向、主格配置、数据绑定、条件格式管理
+- **属性面板**：展开方向、主格配置、数据绑定、条件格式管理，支持左主格/上主格手动编辑与清空
 - **数据面板**：数据源 / 数据集 / 字段管理，支持拖放插入
 - **公式编辑**：函数联想、参数提示、引用高亮、实时语法校验
 - **主格拾取**：点击画布快速设置左主格 / 上主格
+- **保存校验**：保存前自动检查展开冲突，定位并高亮冲突单元格
 
 ### 特殊单元格
 - **图片**：URL 或 base64 嵌入，支持 contain/cover 缩放
@@ -28,6 +30,10 @@
 - **数据源**：CSV / Excel / JSON / 本地文件
 - **导出**：HTML / Excel / PDF
 - **存储**：IndexedDB 本地持久化，支持模板导入导出
+
+### 内置回归模板
+- **公式功能测试·动态引用目标**：覆盖数据集动态引用、普通引用自动跟随、40 函数样例
+- **右展开回归样例**：内置同一行多 right 与跨行同字段重复 right，便于复现与回归
 
 ## 🚀 快速开始
 
@@ -58,20 +64,15 @@ npm run preview
 
 ### 运行测试
 ```bash
+# 全量测试
+npm run test
+
 # 端到端测试
-npx vite-node test/e2e.test.ts
+npm run test -- test/e2e.test.ts
 
-# 浏览器流程模拟
-npx vite-node test/browser-flow.test.ts
-
-# 新功能回归测试
-npx vite-node test/new-features.test.ts
-
-# 公式联想与参数筛选
-npx vite-node test/formula-param.test.ts
-
-# 特殊元素测试
-npx vite-node test/insert-elements.test.ts
+# 展开回归测试
+npm run test -- test/multi-right-expand-regression.test.ts
+npm run test -- test/c6-right-expand-regression.test.ts
 ```
 
 ## 📁 项目结构
